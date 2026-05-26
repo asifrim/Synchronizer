@@ -62,6 +62,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Skip tempo-shift detection.")
     p.add_argument("--no-grid", action="store_true",
                    help="Skip the metronome grid (4th/8th/16th/32nd note ticks).")
+    p.add_argument("--melody", action="store_true",
+                   help="Detect notes on melodic stems (vocals/bass/other) via Demucs. "
+                        "Writes <csv_stem>_<stem>_melody.csv per stem. "
+                        "Requires the [demucs] extra and a full 4-stem separation.")
+    p.add_argument("--melody-stems", default="vocals,bass,other",
+                   help="Comma-separated stems for --melody (default vocals,bass,other).")
     return p
 
 
@@ -141,6 +147,20 @@ def main(argv: list[str] | None = None) -> int:
             grid_path = csv_path.with_name(csv_path.stem + "_grid.csv")
             write_grid(grid, grid_path)
             print(f"grid -> {grid_path} ({len(grid)} ticks across {len(mix.beat_times)} beats)")
+
+    if args.melody:
+        # Per-stem note detection. Demucs separation is cached; the slow step
+        # only runs the first time a given stem is needed. Keep the imports
+        # lazy (demucs is an optional extra).
+        from .melody import detect_notes, write_notes
+        from .separate import extract_stems
+        wanted = [s.strip() for s in args.melody_stems.split(",") if s.strip()]
+        stem_paths = extract_stems(original_input, wanted, stems_dir=Path(args.stems_dir))
+        for stem_name in wanted:
+            notes = detect_notes(stem_paths[stem_name], stem_name)
+            note_path = csv_path.with_name(csv_path.stem + f"_{stem_name}_melody.csv")
+            write_notes(notes, note_path)
+            print(f"melody/{stem_name} -> {note_path} ({len(notes)} notes)")
 
     return 0
 

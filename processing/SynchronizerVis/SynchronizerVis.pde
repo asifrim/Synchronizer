@@ -35,6 +35,7 @@
 //                  <csv_stem>_waveform.csv alongside the events CSV.
 //   <SEGMENTS_FILE> structural segments (optional), <csv_stem>_segments.csv.
 //   <GRID_FILE>    metronome ticks (optional), <csv_stem>_grid.csv.
+//   <MELODY_*_FILE> per-stem note events (optional), <csv_stem>_<stem>_melody.csv.
 
 import processing.sound.*;
 import java.io.File;
@@ -44,6 +45,14 @@ final String CSV_FILE       = "06_Mdrmx.csv";
 final String WAVE_FILE      = "06_Mdrmx_waveform.csv";
 final String SEGMENTS_FILE  = "06_Mdrmx_segments.csv";
 final String GRID_FILE      = "06_Mdrmx_grid.csv";
+// Per-stem melody CSVs. Sketch loads each lazily (skipped if absent), so
+// adding/removing a stem just means dropping the file in or out of data/.
+final String[] MELODY_STEMS = {"vocals", "bass", "other"};
+final String[] MELODY_FILES = {
+  "06_Mdrmx_vocals_melody.csv",
+  "06_Mdrmx_bass_melody.csv",
+  "06_Mdrmx_other_melody.csv",
+};
 final int   N_TIMBRE_CLUSTERS = 6;
 final int   N_SEGMENT_LABELS  = 4;
 final int[] DIVISIONS         = {4, 8, 16, 32};  // metronome note values
@@ -64,8 +73,10 @@ Table waveformTable;
 ArrayList<Event> events = new ArrayList<Event>();
 ArrayList<Segment> segments = new ArrayList<Segment>();
 ArrayList<GridTick> gridTicks = new ArrayList<GridTick>();
+ArrayList<ArrayList<Note>> melodyNotes;  // one list per MELODY_STEMS row
 color[] segmentColors;
 color[] divisionColors;
+color[] chromaColors;          // 12-pitch-class palette for note bars
 float[] wavePeaks;
 float[] snapTickTimes;        // sorted 1/32 tick times — snap targets
 boolean gridSnapEnabled = true;
@@ -122,6 +133,17 @@ class GridTick {
   }
 }
 
+class Note {
+  float startTime, endTime;
+  int   midi;                  // MIDI number (e.g. 60 = C4)
+  float confidence;
+  String name;                 // e.g. "C4", "F#3"
+  Note(float startTime, float endTime, int midi, String name, float confidence) {
+    this.startTime = startTime; this.endTime = endTime;
+    this.midi = midi; this.name = name; this.confidence = confidence;
+  }
+}
+
 int indexOfBucket(String[] arr, String s) {
   for (int i = 0; i < arr.length; i++) if (arr[i].equals(s)) return i;
   return -1;
@@ -159,6 +181,8 @@ void setup() {
   buildDivisionColors();
   buildSnapTickArray();
   applyGridSnap();
+  loadMelody();
+  buildChromaColors();
 
   sound = new SoundFile(this, AUDIO_FILE);
   trackDuration = sound.duration();
@@ -260,6 +284,43 @@ void applyGridSnap() {
   }
 }
 
+void loadMelody() {
+  melodyNotes = new ArrayList<ArrayList<Note>>();
+  for (int i = 0; i < MELODY_STEMS.length; i++) {
+    ArrayList<Note> list = new ArrayList<Note>();
+    melodyNotes.add(list);
+    File f = new File(dataPath(MELODY_FILES[i]));
+    if (!f.exists()) continue;  // each stem's CSV is independently optional
+    Table t = loadTable(MELODY_FILES[i], "header");
+    for (TableRow r : t.rows()) {
+      list.add(new Note(
+        r.getFloat("start_time"),
+        r.getFloat("end_time"),
+        r.getInt("pitch_midi"),
+        r.getString("note_name"),
+        r.getFloat("confidence")
+      ));
+    }
+  }
+}
+
+void buildChromaColors() {
+  // One hue per pitch class. C is red; ascending the chromatic scale walks
+  // the hue wheel. Same color for the same note across octaves so the
+  // melodic shape reads at a glance.
+  chromaColors = new color[12];
+  colorMode(HSB, 360, 100, 100);
+  for (int i = 0; i < 12; i++) {
+    chromaColors[i] = color(i * 30, 75, 95);
+  }
+  colorMode(RGB, 255);
+}
+
+color colorForMidi(int midi) {
+  int pc = ((midi % 12) + 12) % 12;  // handle negative just in case
+  return chromaColors[pc];
+}
+
 void buildWaveformBuffer() {
   int wW = width - 80;
   int wH = 110;
@@ -317,13 +378,20 @@ void buildPalettes() {
 float gridLeft()   { return 140; }
 float gridRight()  { return width - 40; }
 float gridTop()    { return 90; }
-float gridBottom() { return height - 330; }
+float gridBottom() { return height - 480; }
 float rowHeight()  { return (gridBottom() - gridTop()) / rowValues.length; }
 float cellSize()   { return min(rowHeight() * 0.7, 48); }
 
-// Metronome grid panel — sits between the event grid and the waveform, sharing
-// the event grid's horizontal extent and page window so ticks line up with
-// the onset events above them.
+// Melody panel — three rows (vocals/bass/other) of pitched note bars, sharing
+// the event grid's horizontal extent so notes line up with the events above.
+float melodyTop()    { return height - 460; }
+float melodyBottom() { return height - 335; }
+float melodyRowH()   { return (melodyBottom() - melodyTop()) / MELODY_STEMS.length; }
+float melodyRowY(int row) { return melodyTop() + row * melodyRowH() + melodyRowH() / 2; }
+
+// Metronome grid panel — sits between the melody panel and the waveform,
+// sharing the event grid's horizontal extent and page window so ticks line up
+// with the onset events above them.
 float metroTop()    { return height - 315; }
 float metroBottom() { return height - 185; }
 float metroRowH()   { return (metroBottom() - metroTop()) / DIVISIONS.length; }
@@ -358,6 +426,7 @@ void draw() {
 
   drawGrid(pageEvents, pageStart, pageEnd, now);
   drawDragOverlay(pageStart, pageEnd);
+  drawMelody(pageStart, pageEnd, now);
   drawMetro(pageStart, pageEnd, now);
   drawWaveform(now, pageStart, pageEnd);
   drawHUD(now, currentPage, pageEvents.size());
@@ -430,6 +499,109 @@ void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float
     strokeWeight(2);
     line(playX, gT - 12, playX, gB + 12);
     noStroke();
+  }
+}
+
+void drawMelody(float pageStart, float pageEnd, float now) {
+  if (melodyNotes == null || melodyNotes.isEmpty()) return;
+  float gL = gridLeft(), gR = gridRight();
+  float rowH = melodyRowH();
+
+  // Row labels + baselines.
+  textAlign(LEFT, CENTER);
+  textSize(14);
+  for (int i = 0; i < MELODY_STEMS.length; i++) {
+    float y = melodyRowY(i);
+    fill(150);
+    text(MELODY_STEMS[i], 24, y);
+    stroke(35);
+    strokeWeight(1);
+    line(gL, y, gR, y);
+  }
+
+  // Each note is a horizontal pitched bar from start to end, color = chroma.
+  // The bar's vertical position within the row encodes octave: low MIDI sits
+  // toward the bottom of the row, high MIDI toward the top. This gives a
+  // mini piano-roll without giving up the row-per-stem framing.
+  for (int i = 0; i < melodyNotes.size(); i++) {
+    ArrayList<Note> list = melodyNotes.get(i);
+    if (list == null) continue;
+    int loMidi = stemPitchLo(i);
+    int hiMidi = stemPitchHi(i);
+    float yCenter = melodyRowY(i);
+    float yMin = yCenter - rowH * 0.40;
+    float yMax = yCenter + rowH * 0.40;
+
+    for (Note n : list) {
+      // Skip notes outside the current page window; clamp the bar to the
+      // visible extent if a note straddles a page boundary.
+      if (n.endTime < pageStart || n.startTime >= pageEnd) continue;
+      float t0 = max(n.startTime, pageStart);
+      float t1 = min(n.endTime,   pageEnd);
+      float x0 = gL + (t0 - pageStart) / PAGE_DURATION_S * (gR - gL);
+      float x1 = gL + (t1 - pageStart) / PAGE_DURATION_S * (gR - gL);
+      float w  = max(2, x1 - x0);
+
+      float pitchNorm = constrain((float)(n.midi - loMidi) / max(1, hiMidi - loMidi), 0, 1);
+      float yBar = lerp(yMax, yMin, pitchNorm);  // low at bottom, high at top
+      float barH = max(4, rowH * 0.15);
+
+      color c = colorForMidi(n.midi);
+      boolean playing = (now >= n.startTime && now < n.endTime);
+      float intensity = playing ? 1.0 : 0.55;
+      // Confidence dims low-probability notes so glitches read as faint.
+      float alphaMul = 0.45 + 0.55 * constrain(n.confidence, 0, 1);
+
+      noStroke();
+      fill(red(c) * intensity, green(c) * intensity, blue(c) * intensity, 255 * alphaMul);
+      rect(x0, yBar - barH / 2, w, barH, 2);
+
+      if (playing) {
+        // Halo around the currently-playing note + name label centered in it.
+        noFill();
+        stroke(red(c), green(c), blue(c), 220);
+        strokeWeight(1.5);
+        rect(x0 - 2, yBar - barH / 2 - 2, w + 4, barH + 4, 3);
+        if (w > 28) {
+          noStroke();
+          fill(20, 20, 28, 220);
+          textAlign(CENTER, CENTER);
+          textSize(11);
+          text(n.name, x0 + w / 2, yBar);
+          textAlign(LEFT, CENTER);
+        }
+      }
+    }
+  }
+  noStroke();
+
+  // Playhead across the panel.
+  if (now >= pageStart && now < pageEnd) {
+    float playX = gL + (now - pageStart) / PAGE_DURATION_S * (gR - gL);
+    stroke(255, 200, 50, 160);
+    strokeWeight(2);
+    line(playX, melodyTop() - 4, playX, melodyBottom() + 4);
+    noStroke();
+  }
+}
+
+// Stem-typical MIDI ranges for the piano-roll y-mapping. Values mirror the
+// pyin search ranges in synchronizer/melody.py, so notes detected for each
+// stem land naturally inside its row.
+int stemPitchLo(int stemIdx) {
+  switch (MELODY_STEMS[stemIdx]) {
+    case "vocals": return 40;   // E2
+    case "bass":   return 24;   // C1
+    case "other":  return 36;   // C2
+    default:       return 36;
+  }
+}
+int stemPitchHi(int stemIdx) {
+  switch (MELODY_STEMS[stemIdx]) {
+    case "vocals": return 84;   // C6
+    case "bass":   return 72;   // C5
+    case "other":  return 96;   // C7
+    default:       return 96;
   }
 }
 

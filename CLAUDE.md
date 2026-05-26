@@ -23,7 +23,7 @@ synchronizer path/to/track.flac -o out/track.csv
 python -m synchronizer.cli path/to/track.flac -o out/track.csv
 ```
 
-Useful flags: `--percussive` (HPSS first, detect on percussive component — good for drum-heavy material), `--delta` (onset peak-pick threshold; lower = more onsets), `--wait` (minimum gap between onsets in frames, *within a band*), `--no-multi-band` (disable multi-band detection), `--merge-tolerance-ms` (cross-band merge window, default 30), `--timbre-clusters` (k for k-means MFCC clustering, default 6), `--n-segments` (target structural segments, default 12), `--n-segment-labels` (distinct section labels — repeated sections share one, default 4), `--no-segments` (skip structural segmentation), `--n-tempo-segments` (target tempo plateaus for tempo-shift detection, default 8), `--no-tempo-segments` (skip tempo-shift detection), `--no-grid` (skip the metronome grid).
+Useful flags: `--percussive` (HPSS first, detect on percussive component — good for drum-heavy material), `--delta` (onset peak-pick threshold; lower = more onsets), `--wait` (minimum gap between onsets in frames, *within a band*), `--no-multi-band` (disable multi-band detection), `--merge-tolerance-ms` (cross-band merge window, default 30), `--timbre-clusters` (k for k-means MFCC clustering, default 6), `--n-segments` (target structural segments, default 12), `--n-segment-labels` (distinct section labels — repeated sections share one, default 4), `--no-segments` (skip structural segmentation), `--n-tempo-segments` (target tempo plateaus for tempo-shift detection, default 8), `--no-tempo-segments` (skip tempo-shift detection), `--no-grid` (skip the metronome grid), `--melody` (run pyin-based note detection on the vocals / bass / other Demucs stems), `--melody-stems` (comma-separated subset, default `vocals,bass,other`).
 
 Run tests:
 
@@ -42,6 +42,8 @@ The pipeline is a strict four-stage flow with no shared state — each stage tak
 4. `output.write_csv` — flat CSV, one row per transient. `waveform.write_waveform` writes a sibling `<csv_stem>_waveform.csv` (two columns: time, peak) derived from the *original* input file (not the separated stem), used by the Processing visualizer for the full-track thumbnail.
 
 Sidecar analyses run off the *original* input (not the four-stage transient pipeline, and not the separated stem): `waveform.write_waveform` (above), plus `segment.detect_segments`, `segment.detect_tempo_segments`, and `grid.build_grid` (see below). All key their output filename off the events-CSV stem.
+
+`melody.detect_notes` is the one exception — it runs *per separated stem* (vocals / bass / other via Demucs), since pitch contours of a full mix would be hopelessly polyphonic. See "Melodic note detection" below.
 
 `cli.py` wires the four stages together with argparse; it is the only module that performs I/O on the input path or output path.
 
@@ -113,6 +115,22 @@ Like the events CSV, this is a downstream contract: the Processing sketch reads 
 It's **beat-anchored, not BPM-anchored**: each beat interval is subdivided evenly between consecutive detected beats, so the grid follows the actual local tempo (tempo shifts are absorbed for free) and stays phase-locked to the music instead of drifting off a single fixed BPM. The final beat has no following interval, so it contributes only an on-beat tick per division. `--no-grid` skips it. The grid is purely arithmetic on beat times — cheap — so it always runs unless skipped.
 
 The visualizer renders this as the metronome panel (see above); the CSV is a contract like the others — append columns rather than reordering.
+
+## Melodic note detection
+
+`melody.detect_notes` is the pitched counterpart to the drum onset pipeline: rather than detecting energy spikes and bucketing them, it tracks frame-wise pitch on a separated melodic stem and cuts the contour at *pitch gradients* (large pitch jumps + voiced↔unvoiced transitions) to produce discrete **note events** with explicit pitch labels.
+
+It only runs under `--melody` and depends on Demucs (the optional `[demucs]` extra). For each stem in `--melody-stems` (default `vocals,bass,other`) it:
+
+1. Calls `separate.extract_stems` — same Demucs cache as `--drums`, but in 4-stem mode so all melodic stems are available. Cached per stem; the slow separation only runs the first time a given stem is needed.
+2. Loads the stem at **22 kHz mono** (pyin is slow, and 22 kHz is well past any musical fundamental — halves analysis time with no accuracy loss).
+3. Runs `librosa.pyin` with a stem-appropriate `fmin/fmax` window (`PITCH_RANGES` in `melody.py`: bass C1–C5, vocals E2–C6, other C2–C7). Narrowing the search range is the single biggest speed + accuracy win — wide ranges invite octave errors, especially on noisy "other" content.
+4. `_segment_notes` walks the F0 contour frame-by-frame. A new frame extends the current note if its pitch sits within `SEMITONE_TOLERANCE` (50 cents) of the note's running pitch — refreshed over the first few frames so a slightly mis-detected attack doesn't anchor the whole note. A larger gradient starts a new note. Voiced/unvoiced flicker is bridged up to `UNVOICED_FRAME_TOLERANCE` frames; longer gaps close the note. Sub-`MIN_NOTE_DURATION` (70 ms) notes are dropped as pyin glitches.
+5. Each surviving note emits `start_time, end_time, pitch_hz, pitch_midi, note_name, confidence` to `<csv_stem>_<stem>_melody.csv`. Schema is a contract — append columns rather than reordering. `note_name` uses ASCII (`F#5`, not `F♯5`) because Processing's default font has no Unicode sharp glyph.
+
+The visualizer renders this as the **melody panel** between the drum-event grid and the metronome: one row per stem, each note drawn as a horizontal chroma-colored bar from `start_time` to `end_time`. The bar's vertical position within the row encodes octave (low MIDI low, high MIDI high) so each row is a mini piano roll. The currently-playing note brightens and shows its name. Each `_melody.csv` is independently optional — the sketch skips missing stems gracefully.
+
+Heads-up: pyin is *slow* (~30–60s per stem on CPU, on top of the multi-minute Demucs separation). Pass `--melody-stems` to trim to just the stems you care about.
 
 ## Drum-stem separation (optional)
 
