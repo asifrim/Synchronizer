@@ -8,8 +8,15 @@ from pathlib import Path
 from .classify import DEFAULT_N_TIMBRE_CLUSTERS, classify
 from .detect import DetectionConfig, detect_onsets, load_audio
 from .features import extract_features
+from .grid import build_grid, write_grid
 from .output import write_csv
-from .segment import detect_segments, write_segments
+from .segment import (
+    analyze_mix,
+    detect_segments,
+    detect_tempo_segments,
+    write_segments,
+    write_tempo_segments,
+)
 from .waveform import write_waveform
 
 
@@ -48,6 +55,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Number of distinct segment labels — repeated sections share a label (default 4).")
     p.add_argument("--no-segments", action="store_true",
                    help="Skip structural segmentation.")
+    p.add_argument("--n-tempo-segments", type=int, default=8,
+                   help="Target number of tempo-homogeneous segments for tempo-shift "
+                        "detection (default 8).")
+    p.add_argument("--no-tempo-segments", action="store_true",
+                   help="Skip tempo-shift detection.")
+    p.add_argument("--no-grid", action="store_true",
+                   help="Skip the metronome grid (4th/8th/16th/32nd note ticks).")
     return p
 
 
@@ -93,18 +107,40 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{in_path.name}: {len(classified)} transients -> {args.output}")
     print(f"waveform -> {waveform_path}")
 
-    # Structural segments — always computed from the original mix (harmonic
-    # changes that define verse/chorus are visible there, not in the drum stem).
-    if not args.no_segments:
-        segments = detect_segments(
-            original_input,
-            n_segments=args.n_segments,
-            n_labels=args.n_segment_labels,
-        )
-        seg_path = csv_path.with_name(csv_path.stem + "_segments.csv")
-        write_segments(segments, seg_path)
-        print(f"segments -> {seg_path} ({len(segments)} segments, "
-              f"{len({s.label for s in segments})} distinct labels)")
+    # Structural + tempo analysis, both computed from the original mix (the
+    # harmonic and rhythmic changes that define them live there, not in a drum
+    # stem). The load + onset envelope + global tempo are computed once and
+    # shared between the two.
+    if not (args.no_segments and args.no_tempo_segments and args.no_grid):
+        mix = analyze_mix(original_input)
+        print(f"global tempo: {mix.global_bpm:.1f} BPM")
+
+        if not args.no_segments:
+            segments = detect_segments(
+                mix,
+                n_segments=args.n_segments,
+                n_labels=args.n_segment_labels,
+            )
+            seg_path = csv_path.with_name(csv_path.stem + "_segments.csv")
+            write_segments(segments, seg_path)
+            print(f"segments -> {seg_path} ({len(segments)} segments, "
+                  f"{len({s.label for s in segments})} distinct labels)")
+
+        if not args.no_tempo_segments:
+            tempo_segments = detect_tempo_segments(
+                mix, n_tempo_segments=args.n_tempo_segments
+            )
+            tempo_path = csv_path.with_name(csv_path.stem + "_tempo.csv")
+            write_tempo_segments(tempo_segments, tempo_path)
+            bpms = [s.tempo_bpm for s in tempo_segments if s.tempo_bpm]
+            rng = f"{min(bpms):.0f}-{max(bpms):.0f} BPM" if bpms else "n/a"
+            print(f"tempo -> {tempo_path} ({len(tempo_segments)} tempo segments, {rng})")
+
+        if not args.no_grid:
+            grid = build_grid(mix.beat_times)
+            grid_path = csv_path.with_name(csv_path.stem + "_grid.csv")
+            write_grid(grid, grid_path)
+            print(f"grid -> {grid_path} ({len(grid)} ticks across {len(mix.beat_times)} beats)")
 
     return 0
 

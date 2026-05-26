@@ -6,6 +6,9 @@
 //     Each event is a vertical stack of 5 colored cells, positioned by its
 //     start_time within the current page window. Cells flash on onset and
 //     fade through the transient's duration.
+//   - Metronome grid: 4 rows (1/4, 1/8, 1/16, 1/32 note ticks), beat-anchored
+//     so they follow the detected tempo. Each tick flashes as the playhead
+//     crosses it; on-beat ticks (phase 0) are taller/brighter.
 //   - Waveform thumbnail: full-track peaks; current page window highlighted;
 //     playhead marker shows position in the entire track.
 //
@@ -13,6 +16,10 @@
 //   space         play / pause
 //   ← / →         page back / forward
 //   r             jump to start
+//   q             toggle grid-snap (events near a 1/32 tick snap to it; the
+//                 onset and beat-tracking algorithms place a "kick on the
+//                 beat" a few ms apart, so without snap the rect centers
+//                 sit just off the ticks)
 //   ctrl/cmd+s    save edits to <basename>_v<N>.csv in data/
 //
 // Mouse:
@@ -26,6 +33,8 @@
 //   <CSV_FILE>     events from `synchronizer ... -o ...`
 //   <WAVE_FILE>    waveform peaks, auto-generated as
 //                  <csv_stem>_waveform.csv alongside the events CSV.
+//   <SEGMENTS_FILE> structural segments (optional), <csv_stem>_segments.csv.
+//   <GRID_FILE>    metronome ticks (optional), <csv_stem>_grid.csv.
 
 import processing.sound.*;
 import java.io.File;
@@ -34,10 +43,19 @@ final String AUDIO_FILE     = "06 Mdrmx.wav";
 final String CSV_FILE       = "06_Mdrmx.csv";
 final String WAVE_FILE      = "06_Mdrmx_waveform.csv";
 final String SEGMENTS_FILE  = "06_Mdrmx_segments.csv";
+final String GRID_FILE      = "06_Mdrmx_grid.csv";
 final int   N_TIMBRE_CLUSTERS = 6;
 final int   N_SEGMENT_LABELS  = 4;
+final int[] DIVISIONS         = {4, 8, 16, 32};  // metronome note values
 final float PAGE_DURATION_S   = 4.0;
 final float DRAG_PIXELS_PER_STEP = 25;
+
+// Onset detection and beat tracking are independent estimators, so a transient
+// the ear hears as "on the beat" lands a few ms off the nearest tick. Snap
+// events whose detected time is within this tolerance of a 1/32 tick to that
+// tick — purely visual, the saved CSV keeps the original time. Genuinely
+// off-beat hits (> tolerance) keep their natural position. Toggle with 'q'.
+final float GRID_SNAP_TOLERANCE_S = 0.030;
 
 SoundFile sound;
 Table eventsTable;
@@ -45,8 +63,12 @@ Table waveformTable;
 
 ArrayList<Event> events = new ArrayList<Event>();
 ArrayList<Segment> segments = new ArrayList<Segment>();
+ArrayList<GridTick> gridTicks = new ArrayList<GridTick>();
 color[] segmentColors;
+color[] divisionColors;
 float[] wavePeaks;
+float[] snapTickTimes;        // sorted 1/32 tick times — snap targets
+boolean gridSnapEnabled = true;
 float   trackDuration;
 PGraphics waveformBuffer;
 
@@ -73,13 +95,14 @@ String savedNotice       = "";
 int    savedNoticeUntil  = 0;
 
 class Event {
-  float t, dur;
+  float origT;          // detected onset time (ground truth, also what we save)
+  float t, dur;         // t is the visual position — may be snapped to a grid tick
   int   rowIndex;       // index into eventsTable, needed for save
   int[] bucketIdx;      // current (possibly edited) bucket index per row
   boolean disabled = false;
   Event(int rowIndex, float t, float dur, int[] bucketIdx) {
     this.rowIndex = rowIndex;
-    this.t = t; this.dur = dur; this.bucketIdx = bucketIdx;
+    this.origT = t; this.t = t; this.dur = dur; this.bucketIdx = bucketIdx;
   }
 }
 
@@ -88,6 +111,14 @@ class Segment {
   int   label;
   Segment(float startTime, float endTime, int label) {
     this.startTime = startTime; this.endTime = endTime; this.label = label;
+  }
+}
+
+class GridTick {
+  float t;
+  int   division, beat, phase;  // phase 0 = on the beat
+  GridTick(float t, int division, int beat, int phase) {
+    this.t = t; this.division = division; this.beat = beat; this.phase = phase;
   }
 }
 
@@ -124,6 +155,10 @@ void setup() {
 
   loadSegments();
   buildSegmentColors();
+  loadGrid();
+  buildDivisionColors();
+  buildSnapTickArray();
+  applyGridSnap();
 
   sound = new SoundFile(this, AUDIO_FILE);
   trackDuration = sound.duration();
@@ -155,6 +190,74 @@ void buildSegmentColors() {
     segmentColors[i] = color(i * 360.0 / N_SEGMENT_LABELS + 25, 55, 80);
   }
   colorMode(RGB, 255);
+}
+
+void loadGrid() {
+  File f = new File(dataPath(GRID_FILE));
+  if (!f.exists()) return;  // grid is optional
+  Table t = loadTable(GRID_FILE, "header");
+  for (TableRow r : t.rows()) {
+    gridTicks.add(new GridTick(
+      r.getFloat("time"),
+      r.getInt("division"),
+      r.getInt("beat"),
+      r.getInt("phase")
+    ));
+  }
+}
+
+void buildDivisionColors() {
+  divisionColors = new color[DIVISIONS.length];
+  colorMode(HSB, 360, 100, 100);
+  // Quarter = warm/bright, finer subdivisions shift cooler so the denser rows
+  // read as "background" pulse.
+  for (int i = 0; i < DIVISIONS.length; i++) {
+    divisionColors[i] = color(45 + i * 55, 70, 95);
+  }
+  colorMode(RGB, 255);
+}
+
+int divisionRow(int d) {
+  for (int i = 0; i < DIVISIONS.length; i++) if (DIVISIONS[i] == d) return i;
+  return DIVISIONS.length - 1;
+}
+
+void buildSnapTickArray() {
+  // Snap targets = the 1/32 ticks. Coarser divisions are subsets of 1/32
+  // (each beat tick has phase 0 across all divisions), so this is sufficient.
+  if (gridTicks.isEmpty()) { snapTickTimes = new float[0]; return; }
+  int finest = DIVISIONS[DIVISIONS.length - 1];
+  ArrayList<Float> times = new ArrayList<Float>();
+  for (GridTick g : gridTicks) {
+    if (g.division == finest) times.add(g.t);
+  }
+  snapTickTimes = new float[times.size()];
+  for (int i = 0; i < times.size(); i++) snapTickTimes[i] = times.get(i);
+}
+
+float snapToNearestTick(float t) {
+  // Returns the nearest tick time if within GRID_SNAP_TOLERANCE_S, else t.
+  // Binary search the sorted snapTickTimes array.
+  if (snapTickTimes == null || snapTickTimes.length == 0) return t;
+  int lo = 0, hi = snapTickTimes.length;
+  while (lo < hi) {
+    int mid = (lo + hi) / 2;
+    if (snapTickTimes[mid] < t) lo = mid + 1; else hi = mid;
+  }
+  float best = (lo < snapTickTimes.length) ? snapTickTimes[lo] : snapTickTimes[snapTickTimes.length - 1];
+  if (lo > 0) {
+    float prev = snapTickTimes[lo - 1];
+    if (abs(prev - t) < abs(best - t)) best = prev;
+  }
+  return (abs(best - t) <= GRID_SNAP_TOLERANCE_S) ? best : t;
+}
+
+void applyGridSnap() {
+  // Rebuild every event's visual time from its origT, snapping if enabled.
+  // Idempotent — call it any time the snap state changes.
+  for (Event e : events) {
+    e.t = gridSnapEnabled ? snapToNearestTick(e.origT) : e.origT;
+  }
 }
 
 void buildWaveformBuffer() {
@@ -214,9 +317,17 @@ void buildPalettes() {
 float gridLeft()   { return 140; }
 float gridRight()  { return width - 40; }
 float gridTop()    { return 90; }
-float gridBottom() { return height - 220; }
+float gridBottom() { return height - 330; }
 float rowHeight()  { return (gridBottom() - gridTop()) / rowValues.length; }
 float cellSize()   { return min(rowHeight() * 0.7, 48); }
+
+// Metronome grid panel — sits between the event grid and the waveform, sharing
+// the event grid's horizontal extent and page window so ticks line up with
+// the onset events above them.
+float metroTop()    { return height - 315; }
+float metroBottom() { return height - 185; }
+float metroRowH()   { return (metroBottom() - metroTop()) / DIVISIONS.length; }
+float metroRowY(int row) { return metroTop() + row * metroRowH() + metroRowH() / 2; }
 
 float pageStartFor(float now) {
   return ((int) (now / PAGE_DURATION_S)) * PAGE_DURATION_S;
@@ -247,6 +358,7 @@ void draw() {
 
   drawGrid(pageEvents, pageStart, pageEnd, now);
   drawDragOverlay(pageStart, pageEnd);
+  drawMetro(pageStart, pageEnd, now);
   drawWaveform(now, pageStart, pageEnd);
   drawHUD(now, currentPage, pageEvents.size());
 }
@@ -321,6 +433,65 @@ void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float
   }
 }
 
+void drawMetro(float pageStart, float pageEnd, float now) {
+  float gL = gridLeft(), gR = gridRight();
+  float rowH = metroRowH();
+
+  // Row labels + baselines.
+  textAlign(LEFT, CENTER);
+  textSize(14);
+  for (int i = 0; i < DIVISIONS.length; i++) {
+    float y = metroRowY(i);
+    fill(150);
+    text("1/" + DIVISIONS[i], 24, y);
+    stroke(35);
+    strokeWeight(1);
+    line(gL, y, gR, y);
+  }
+
+  // Ticks within the current page window.
+  for (GridTick g : gridTicks) {
+    if (g.t < pageStart || g.t >= pageEnd) continue;
+    int row = divisionRow(g.division);
+    float x = gL + (g.t - pageStart) / PAGE_DURATION_S * (gR - gL);
+    float y = metroRowY(row);
+    color c = divisionColors[row];
+    boolean onBeat = (g.phase == 0);
+    float baseH = rowH * (onBeat ? 0.42 : 0.26);
+
+    // Flash as the playhead crosses the tick (brief pre-roll, then fade out).
+    float age = now - g.t;
+    float flash = (age >= -0.015 && age < 0.14) ? constrain(1 - age / 0.14, 0, 1) : 0;
+
+    // Dim baseline mark (the static grid).
+    stroke(red(c) * 0.55, green(c) * 0.55, blue(c) * 0.55, onBeat ? 200 : 110);
+    strokeWeight(onBeat ? 2 : 1);
+    line(x, y - baseH, x, y + baseH);
+
+    // Bright pulse + glow dot on hit.
+    if (flash > 0) {
+      float h = baseH * (1 + 0.6 * flash);
+      stroke(red(c), green(c), blue(c), 180 + 75 * flash);
+      strokeWeight(onBeat ? 4 : 3);
+      line(x, y - h, x, y + h);
+      noStroke();
+      fill(red(c), green(c), blue(c), 200 * flash);
+      float r = (onBeat ? 7 : 5) * flash;
+      ellipse(x, y, r * 2, r * 2);
+    }
+  }
+  noStroke();
+
+  // Playhead across the panel (matches the event-grid / waveform playhead).
+  if (now >= pageStart && now < pageEnd) {
+    float playX = gL + (now - pageStart) / PAGE_DURATION_S * (gR - gL);
+    stroke(255, 200, 50, 160);
+    strokeWeight(2);
+    line(playX, metroTop() - 6, playX, metroBottom() + 6);
+    noStroke();
+  }
+}
+
 void drawDragOverlay(float pageStart, float pageEnd) {
   if (dragEventIdx < 0) return;
   Event e = events.get(dragEventIdx);
@@ -386,7 +557,9 @@ void drawHUD(float now, int page, int eventsThisPage) {
   fill(200);
 
   textAlign(RIGHT, TOP);
-  text("space  play/pause     ← →  page seek     r  to start     ctrl/cmd+s  save", width - 24, 24);
+  String snapHint = gridSnapEnabled ? "snap:on" : "snap:off";
+  text("space  play/pause     ← →  page seek     r  start     q  " + snapHint +
+       "     ctrl/cmd+s  save", width - 24, 24);
 
   if (dragEventIdx >= 0) {
     Event e = events.get(dragEventIdx);
@@ -499,6 +672,10 @@ void keyPressed() {
     seek(sound.position() - PAGE_DURATION_S);
   } else if (keyCode == RIGHT) {
     seek(sound.position() + PAGE_DURATION_S);
+  }
+  if (key == 'q' || key == 'Q') {
+    gridSnapEnabled = !gridSnapEnabled;
+    applyGridSnap();
   }
 }
 
