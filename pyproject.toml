@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "synchronizer"
+version = "0.1.0"
+description = "Detect and classify audio transients, export to CSV for Processing / TouchDesigner."
+requires-python = ">=3.10"
+dependencies = [
+    "librosa>=0.10",
+    "soundfile>=0.12",
+    "numpy>=1.24",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+]
+demucs = [
+    "demucs>=4",
+]
+
+[project.scripts]
+synchronizer = "synchronizer.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["synchronizer*"]

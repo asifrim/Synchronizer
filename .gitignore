@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+build/
+dist/
+.pytest_cache/
+.DS_Store
+
+# Local audio + outputs
+*.wav
+*.flac
+*.mp3
+*.ogg
+*.aiff
+out/
+samples/
+stems/
