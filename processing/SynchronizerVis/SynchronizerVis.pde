@@ -63,24 +63,28 @@ import java.io.File;
 // MIDI output lives in MidiOut.java (a plain-Java tab) — the Processing
 // preprocessor can't parse javax.sound.midi's nested types in this .pde.
 
+// --- Track / file config (edit these to switch tracks) -----------------------
+
 final String AUDIO_FILE     = "04_Krib.wav";
 final String CSV_FILE       = "04_Krib.csv";
 final String WAVE_FILE      = "04_Krib_waveform.csv";
 final String SEGMENTS_FILE  = "04_Krib_segments.csv";
 final String GRID_FILE      = "04_Krib_grid.csv";
-// Per-stem melody CSVs. Sketch loads each lazily (skipped if absent), so
-// adding/removing a stem just means dropping the file in or out of data/.
+// Per-stem melody CSVs — loaded lazily; skip any that are absent.
 final String[] MELODY_STEMS = {"vocals", "bass", "other"};
 final String[] MELODY_FILES = {
   "04_Krib_vocals_melody.csv",
   "04_Krib_bass_melody.csv",
   "04_Krib_other_melody.csv",
 };
-final int   N_TIMBRE_CLUSTERS     = 6;
-final int   N_TRANSIENT_CLUSTERS  = 2;
-final int   N_SEGMENT_LABELS  = 4;
-final int[] DIVISIONS         = {4, 8, 16, 32};  // metronome note values
-final float PAGE_DURATION_S   = 4.0;
+
+// --- Analysis / display config -----------------------------------------------
+
+final int   N_TIMBRE_CLUSTERS    = 6;
+final int   N_TRANSIENT_CLUSTERS = 2;
+final int   N_SEGMENT_LABELS     = 4;
+final int[] DIVISIONS            = {4, 8, 16, 32};  // metronome note values
+final float PAGE_DURATION_S      = 4.0;
 final float DRAG_PIXELS_PER_STEP = 25;
 
 // Onset detection and beat tracking are independent estimators, so a transient
@@ -90,89 +94,89 @@ final float DRAG_PIXELS_PER_STEP = 25;
 // off-beat hits (> tolerance) keep their natural position. Toggle with 'q'.
 final float GRID_SNAP_TOLERANCE_S = 0.030;
 
-// --- MIDI / ADSR output ------------------------------------------------------
+// --- MIDI / ADSR config ------------------------------------------------------
 // Virtual MIDI port to send to (substring match). loopMIDI on Windows; on Mac
 // the IAC Driver, on Linux an ALSA virtual port. If no match is found the
 // sketch still runs, with MIDI disabled.
-final String MIDI_PORT_NAME = "loopMIDI Port";
-final int    MIDI_CHANNEL   = 0;     // 0-indexed; 0 = MIDI channel 1
-final int    BASE_CC        = 20;    // cluster i -> CC (BASE_CC + i)
+final String  MIDI_PORT_NAME   = "loopMIDI Port";
+final int     MIDI_CHANNEL     = 0;      // 0-indexed; 0 = MIDI channel 1
+final int     BASE_CC          = 20;     // cluster i -> CC (BASE_CC + i)
 // Envelope length = max(transient duration, MIN_ENV_S). The floor guarantees
-// even very short transients produce a CC gesture the frame loop can resolve;
-// set to 0 for strict duration-only timing.
-final float  MIN_ENV_S      = 0.08;
+// even very short transients produce a CC gesture the frame loop can resolve.
+final float   MIN_ENV_S        = 0.08;
 final boolean RELEASE_ON_PAUSE = false;  // true = send 0s on pause instead of holding
 
-SoundFile sound;
-Table eventsTable;
-Table waveformTable;
+// --- Audio / data state ------------------------------------------------------
 
-ArrayList<Event> events = new ArrayList<Event>();
-ArrayList<Segment> segments = new ArrayList<Segment>();
-ArrayList<GridTick> gridTicks = new ArrayList<GridTick>();
-ArrayList<ArrayList<Note>> melodyNotes;  // one list per MELODY_STEMS row
-color[] segmentColors;
-color[] divisionColors;
-color[] chromaColors;          // 12-pitch-class palette for note bars
-float[] wavePeaks;
-float   waveformWindowDur;    // duration of each wavePeaks window in seconds
-float[] snapTickTimes;        // sorted 1/32 tick times — snap targets
-boolean gridSnapEnabled = true;
-float   trackDuration;
+SoundFile sound;
+Table     eventsTable;
+Table     waveformTable;
+
+ArrayList<Event>              events    = new ArrayList<Event>();
+ArrayList<Segment>            segments  = new ArrayList<Segment>();
+ArrayList<GridTick>           gridTicks = new ArrayList<GridTick>();
+ArrayList<ArrayList<Note>>    melodyNotes;  // one list per MELODY_STEMS entry
+color[]   segmentColors;
+color[]   divisionColors;
+color[]   chromaColors;         // 12-pitch-class palette for note bars
+float[]   wavePeaks;
+float     waveformWindowDur;   // duration of each wavePeaks sample in seconds
+float[]   snapTickTimes;       // sorted 1/32 tick times used for grid snap
+boolean   gridSnapEnabled = true;
+float     trackDuration;
 PGraphics waveformBuffer;
 
+// Bucket label arrays — indices match CSV values.
 final String[] PITCH      = {"unpitched", "low", "mid", "high"};
 final String[] BRIGHTNESS = {"dark", "mid", "bright"};
 final String[] ENERGY     = {"soft", "medium", "loud"};
 final String[] DURATION   = {"short", "medium", "long"};
-String[] TIMBRE;
-String[] TRANSIENT_CLUSTER;
+String[]       TIMBRE;
+String[]       TRANSIENT_CLUSTER;
 
-String[][] rowValues;
+String[][]     rowValues;
 final String[] rowNames = {"pitch", "brightness", "energy", "timbre", "cluster"};
-final String[] csvCols  = {"pitch_bucket", "brightness_bucket", "energy_bucket", "timbre_cluster", "transient_cluster"};
+final String[] csvCols  = {
+  "pitch_bucket", "brightness_bucket", "energy_bucket",
+  "timbre_cluster", "transient_cluster"
+};
 
 color[][] palettes;
 
-// Hover state — updated by mouseMoved(); used for digit-key cluster reassignment.
-int hoverEventIdx = -1;
+// --- Interaction state -------------------------------------------------------
 
-// Drag state for right-click bucket editing.
-int   dragEventIdx     = -1;
-int   dragRow          = -1;
-int   dragStartBucket  = -1;
-float dragStartY       = 0;
+int   hoverEventIdx   = -1;   // updated by mouseMoved(); used for digit-key reassign
+int   dragEventIdx    = -1;
+int   dragRow         = -1;
+int   dragStartBucket = -1;
+float dragStartY      = 0;
 
-// Playback rate (1.0 = normal, 0.5 = half speed, etc.).
 float playbackRate = 1.0;
+float stopAtTime   = -1;   // pause when playhead crosses this (preview feature)
 
-// Preview stop: when >= 0, pause as soon as the playhead crosses this time.
-float stopAtTime = -1;
+String savedNotice      = "";
+int    savedNoticeUntil = 0;
 
-// Transient save-notice (HUD).
-String savedNotice       = "";
-int    savedNoticeUntil  = 0;
+// --- ADSR / MIDI state -------------------------------------------------------
 
-// Per-cluster ADSR (fractions of the envelope length; sustainLevel is 0..1
-// amplitude). Sized to N_TRANSIENT_CLUSTERS in setup().
 float[]   attackFrac, decayFrac, sustainLevel, releaseFrac;
-boolean[] attackExp, decayExp;  // true = exponential curve shape for that segment
-float[]   ccVal;       // current envelope value per cluster, 0..1 (for meters)
-int[]     lastSent;    // last quantized CC value sent per cluster (-1 = none yet)
+boolean[] attackExp, decayExp;  // true = exponential curve shape
+float[]   ccVal;      // live envelope value per cluster, 0..1 (for meters)
+int[]     lastSent;   // last quantized CC value sent (-1 = not yet sent)
 
-// MIDI output (see MidiOut.java). midiOut.isOpen() false = port not found.
 MidiOut midiOut;
 boolean midiEnabled = true;
 
-// Right-panel slider drag state (-1 = not dragging).
-int sliderDragCluster = -1;
-int sliderDragParam   = -1;  // 0=A, 1=D, 2=S, 3=R
+int sliderDragCluster = -1;  // -1 = not dragging
+int sliderDragParam   = -1;  // 0=A 1=D 2=S 3=R
+
+// --- Data classes ------------------------------------------------------------
 
 class Event {
-  float origT;          // detected onset time (ground truth, also what we save)
-  float t, dur;         // t is the visual position — may be snapped to a grid tick
-  int   rowIndex;       // index into eventsTable, needed for save
-  int[] bucketIdx;      // current (possibly edited) bucket index per row
+  float origT;        // detected onset time (ground truth; also saved to CSV)
+  float t, dur;       // t may be snapped to a grid tick (visual only)
+  int   rowIndex;     // row in eventsTable, needed for save
+  int[] bucketIdx;    // current (possibly edited) bucket index per row
   boolean disabled = false;
   Event(int rowIndex, float t, float dur, int[] bucketIdx) {
     this.rowIndex = rowIndex;
@@ -183,34 +187,34 @@ class Event {
 class Segment {
   float startTime, endTime;
   int   label;
-  Segment(float startTime, float endTime, int label) {
-    this.startTime = startTime; this.endTime = endTime; this.label = label;
-  }
+  Segment(float s, float e, int l) { startTime = s; endTime = e; label = l; }
 }
 
 class GridTick {
   float t;
   int   division, beat, phase;  // phase 0 = on the beat
-  GridTick(float t, int division, int beat, int phase) {
-    this.t = t; this.division = division; this.beat = beat; this.phase = phase;
+  GridTick(float t, int div, int beat, int phase) {
+    this.t = t; this.division = div; this.beat = beat; this.phase = phase;
   }
 }
 
 class Note {
-  float startTime, endTime;
-  int   midi;                  // MIDI number (e.g. 60 = C4)
-  float confidence;
-  String name;                 // e.g. "C4", "F#3"
-  Note(float startTime, float endTime, int midi, String name, float confidence) {
-    this.startTime = startTime; this.endTime = endTime;
-    this.midi = midi; this.name = name; this.confidence = confidence;
+  float startTime, endTime, confidence;
+  int   midi;
+  String name;  // e.g. "C4", "F#3" — ASCII only (Processing font has no sharp glyph)
+  Note(float s, float e, int midi, String name, float conf) {
+    startTime = s; endTime = e; this.midi = midi; this.name = name; confidence = conf;
   }
 }
+
+// --- Helpers -----------------------------------------------------------------
 
 int indexOfBucket(String[] arr, String s) {
   for (int i = 0; i < arr.length; i++) if (arr[i].equals(s)) return i;
   return -1;
 }
+
+// --- Entry point -------------------------------------------------------------
 
 void setup() {
   size(1920, 1080, P2D);
@@ -228,9 +232,8 @@ void setup() {
   int idx = 0;
   for (TableRow r : eventsTable.rows()) {
     int[] bi = new int[rowValues.length];
-    for (int i = 0; i < rowValues.length; i++) {
+    for (int i = 0; i < rowValues.length; i++)
       bi[i] = indexOfBucket(rowValues[i], r.getString(csvCols[i]));
-    }
     events.add(new Event(idx, r.getFloat("start_time"), r.getFloat("duration"), bi));
     idx++;
   }
@@ -250,1378 +253,12 @@ void setup() {
   buildChromaColors();
 
   sound = new SoundFile(this, AUDIO_FILE);
-  trackDuration = sound.duration();
+  trackDuration    = sound.duration();
   waveformWindowDur = (wavePeaks.length > 0) ? trackDuration / wavePeaks.length : 1.0 / 44100;
 
   buildWaveformBuffer();
-
   sound.rate(playbackRate);
 
   initAdsr();
   initMidi();
-}
-
-void loadSegments() {
-  File f = new File(dataPath(SEGMENTS_FILE));
-  if (!f.exists()) return;  // segments are optional
-  Table t = loadTable(SEGMENTS_FILE, "header");
-  for (TableRow r : t.rows()) {
-    segments.add(new Segment(
-      r.getFloat("start_time"),
-      r.getFloat("end_time"),
-      r.getInt("label")
-    ));
-  }
-}
-
-void buildSegmentColors() {
-  segmentColors = new color[N_SEGMENT_LABELS];
-  colorMode(HSB, 360, 100, 100);
-  // Distinct but muted hues — kept low-saturation so they don't overwhelm the
-  // waveform strokes drawn on top.
-  for (int i = 0; i < N_SEGMENT_LABELS; i++) {
-    segmentColors[i] = color(i * 360.0 / N_SEGMENT_LABELS + 25, 55, 80);
-  }
-  colorMode(RGB, 255);
-}
-
-void loadGrid() {
-  File f = new File(dataPath(GRID_FILE));
-  if (!f.exists()) return;  // grid is optional
-  Table t = loadTable(GRID_FILE, "header");
-  for (TableRow r : t.rows()) {
-    gridTicks.add(new GridTick(
-      r.getFloat("time"),
-      r.getInt("division"),
-      r.getInt("beat"),
-      r.getInt("phase")
-    ));
-  }
-}
-
-void buildDivisionColors() {
-  divisionColors = new color[DIVISIONS.length];
-  colorMode(HSB, 360, 100, 100);
-  // Quarter = warm/bright, finer subdivisions shift cooler so the denser rows
-  // read as "background" pulse.
-  for (int i = 0; i < DIVISIONS.length; i++) {
-    divisionColors[i] = color(45 + i * 55, 70, 95);
-  }
-  colorMode(RGB, 255);
-}
-
-int divisionRow(int d) {
-  for (int i = 0; i < DIVISIONS.length; i++) if (DIVISIONS[i] == d) return i;
-  return DIVISIONS.length - 1;
-}
-
-void buildSnapTickArray() {
-  // Snap targets = the 1/32 ticks. Coarser divisions are subsets of 1/32
-  // (each beat tick has phase 0 across all divisions), so this is sufficient.
-  if (gridTicks.isEmpty()) { snapTickTimes = new float[0]; return; }
-  int finest = DIVISIONS[DIVISIONS.length - 1];
-  ArrayList<Float> times = new ArrayList<Float>();
-  for (GridTick g : gridTicks) {
-    if (g.division == finest) times.add(g.t);
-  }
-  snapTickTimes = new float[times.size()];
-  for (int i = 0; i < times.size(); i++) snapTickTimes[i] = times.get(i);
-}
-
-float snapToNearestTick(float t) {
-  // Returns the nearest tick time if within GRID_SNAP_TOLERANCE_S, else t.
-  // Binary search the sorted snapTickTimes array.
-  if (snapTickTimes == null || snapTickTimes.length == 0) return t;
-  int lo = 0, hi = snapTickTimes.length;
-  while (lo < hi) {
-    int mid = (lo + hi) / 2;
-    if (snapTickTimes[mid] < t) lo = mid + 1; else hi = mid;
-  }
-  float best = (lo < snapTickTimes.length) ? snapTickTimes[lo] : snapTickTimes[snapTickTimes.length - 1];
-  if (lo > 0) {
-    float prev = snapTickTimes[lo - 1];
-    if (abs(prev - t) < abs(best - t)) best = prev;
-  }
-  return (abs(best - t) <= GRID_SNAP_TOLERANCE_S) ? best : t;
-}
-
-void applyGridSnap() {
-  // Rebuild every event's visual time from its origT, snapping if enabled.
-  // Idempotent — call it any time the snap state changes.
-  for (Event e : events) {
-    e.t = gridSnapEnabled ? snapToNearestTick(e.origT) : e.origT;
-  }
-}
-
-void loadMelody() {
-  melodyNotes = new ArrayList<ArrayList<Note>>();
-  for (int i = 0; i < MELODY_STEMS.length; i++) {
-    ArrayList<Note> list = new ArrayList<Note>();
-    melodyNotes.add(list);
-    File f = new File(dataPath(MELODY_FILES[i]));
-    if (!f.exists()) continue;  // each stem's CSV is independently optional
-    Table t = loadTable(MELODY_FILES[i], "header");
-    for (TableRow r : t.rows()) {
-      list.add(new Note(
-        r.getFloat("start_time"),
-        r.getFloat("end_time"),
-        r.getInt("pitch_midi"),
-        r.getString("note_name"),
-        r.getFloat("confidence")
-      ));
-    }
-  }
-}
-
-void buildChromaColors() {
-  // One hue per pitch class. C is red; ascending the chromatic scale walks
-  // the hue wheel. Same color for the same note across octaves so the
-  // melodic shape reads at a glance.
-  chromaColors = new color[12];
-  colorMode(HSB, 360, 100, 100);
-  for (int i = 0; i < 12; i++) {
-    chromaColors[i] = color(i * 30, 75, 95);
-  }
-  colorMode(RGB, 255);
-}
-
-color colorForMidi(int midi) {
-  int pc = ((midi % 12) + 12) % 12;  // handle negative just in case
-  return chromaColors[pc];
-}
-
-void buildWaveformBuffer() {
-  int wW = (int)(panelLeft() - 60);  // matches drawWaveform's wLeft=40, wRight=panelLeft()-20
-  int wH = 110;
-  waveformBuffer = createGraphics(wW, wH, P2D);
-  waveformBuffer.beginDraw();
-  waveformBuffer.background(22);
-
-  // Segment color bands (drawn first, peaks layered on top).
-  waveformBuffer.noStroke();
-  for (Segment s : segments) {
-    float x0 = constrain(s.startTime, 0, trackDuration) / trackDuration * wW;
-    float x1 = constrain(s.endTime,   0, trackDuration) / trackDuration * wW;
-    color c = segmentColors[constrain(s.label, 0, N_SEGMENT_LABELS - 1)];
-    waveformBuffer.fill(red(c), green(c), blue(c), 90);
-    waveformBuffer.rect(x0, 0, max(1, x1 - x0), wH);
-  }
-
-  waveformBuffer.stroke(220, 230, 245);
-  waveformBuffer.strokeWeight(1);
-  int   n   = wavePeaks.length;
-  float mid = wH / 2.0;
-  for (int px = 0; px < wW; px++) {
-    int i0 = max(0,     (int)((float) px      / wW * n));
-    int i1 = min(n - 1, (int)((float)(px + 1) / wW * n));
-    float p = 0;
-    for (int i = i0; i <= i1; i++) p = max(p, wavePeaks[i]);
-    float h = p * (wH / 2) * 0.95;
-    waveformBuffer.line(px, mid - h, px, mid + h);
-  }
-  waveformBuffer.endDraw();
-}
-
-int currentSegmentIndex(float now) {
-  for (int i = 0; i < segments.size(); i++) {
-    Segment s = segments.get(i);
-    if (now >= s.startTime && now < s.endTime) return i;
-  }
-  return -1;
-}
-
-void buildPalettes() {
-  palettes = new color[rowValues.length][];
-  palettes[0] = new color[]{ color(90, 90, 100), color(60, 110, 220),
-                             color(90, 200, 130), color(240, 100, 100) };
-  palettes[1] = new color[]{ color(40, 70, 130), color(200, 170, 60), color(250, 240, 200) };
-  palettes[2] = new color[]{ color(90, 80, 120), color(160, 130, 200), color(220, 80, 230) };
-  palettes[3] = new color[N_TIMBRE_CLUSTERS];
-  palettes[4] = new color[N_TRANSIENT_CLUSTERS];
-  colorMode(HSB, 360, 100, 100);
-  for (int i = 0; i < N_TIMBRE_CLUSTERS; i++) {
-    palettes[3][i] = color(i * 360.0 / N_TIMBRE_CLUSTERS, 70, 95);
-  }
-  for (int i = 0; i < N_TRANSIENT_CLUSTERS; i++) {
-    palettes[4][i] = color(i * 360.0 / N_TRANSIENT_CLUSTERS, 85, 100);
-  }
-  colorMode(RGB, 255);
-}
-
-// --- Layout constants — kept consistent between draw and hit-test. -----------
-
-// Right panel takes the rightmost 352px.
-float panelLeft() { return width - 352; }
-float panelW()    { return 342; }
-
-float gridLeft()   { return 140; }
-float gridRight()  { return panelLeft() - 20; }
-float gridTop()    { return 90; }
-float gridBottom() { return height - 650; }
-float rowHeight()  { return (gridBottom() - gridTop()) / rowValues.length; }
-float cellSize()   { return min(rowHeight() * 0.7, 48); }
-
-// Melody panel — three rows (vocals/bass/other) of pitched note bars, sharing
-// the event grid's horizontal extent so notes line up with the events above.
-float melodyTop()    { return height - 630; }
-float melodyBottom() { return height - 295; }
-float melodyRowH()   { return (melodyBottom() - melodyTop()) / MELODY_STEMS.length; }
-float melodyRowY(int row) { return melodyTop() + row * melodyRowH() + melodyRowH() / 2; }
-
-// Metronome grid panel — sits between the melody panel and the waveform,
-// sharing the event grid's horizontal extent and page window so ticks line up
-// with the onset events above them.
-float metroTop()    { return height - 275; }
-float metroBottom() { return height - 185; }
-float metroRowH()   { return (metroBottom() - metroTop()) / DIVISIONS.length; }
-float metroRowY(int row) { return metroTop() + row * metroRowH() + metroRowH() / 2; }
-
-float pageStartFor(float now) {
-  return ((int) (now / PAGE_DURATION_S)) * PAGE_DURATION_S;
-}
-
-float eventX(Event e, float pageStart) {
-  return gridLeft() + (e.t - pageStart) / PAGE_DURATION_S * (gridRight() - gridLeft());
-}
-
-float rowCenterY(int row) {
-  return gridTop() + row * rowHeight() + rowHeight() / 2;
-}
-
-// --- Right-panel layout helpers ----------------------------------------------
-// Each cluster gets an equal vertical slice of the panel.
-
-float panelClusterH() { return (height - 60) / (float)N_TRANSIENT_CLUSTERS; }
-float panelClusterY(int c) { return 40 + c * panelClusterH(); }
-
-// Within each cluster section (offsets from panelClusterY):
-//   32  ..  162  envelope curve (130px tall)
-//   174 .. 349   sliders: A at 174, D at 218, S at 262, R at 306 (center Y)
-//   362 ..  395  shape toggles row
-//   412 ..  441  CC level meter
-float panelCurveT(int c)           { return panelClusterY(c) + 32; }
-float panelCurveB(int c)           { return panelCurveT(c) + 130; }
-float panelSliderY(int c, int p)   { return panelClusterY(c) + 174 + p * 44; }
-float panelToggleY(int c)          { return panelClusterY(c) + 174 + 4 * 44 + 18; }
-float panelMeterY(int c)           { return panelClusterY(c) + 174 + 4 * 44 + 60; }
-
-// Slider track geometry (shared across all sliders).
-float slTrackL()       { return panelLeft() + 62; }
-float slTrackR()       { return panelLeft() + panelW() - 14; }
-float slTrackW()       { return slTrackR() - slTrackL(); }
-float slValX(float v)  { return slTrackL() + constrain(v, 0, 1) * slTrackW(); }
-float slXtoVal(float mx){ return constrain((mx - slTrackL()) / slTrackW(), 0, 1); }
-
-// --- Draw --------------------------------------------------------------------
-
-void draw() {
-  background(15);
-
-  if (stopAtTime >= 0 && sound.position() >= stopAtTime) {
-    sound.pause();
-    stopAtTime = -1;
-  }
-
-  float now = sound.position();
-
-  updateMidi(now);  // emit per-cluster ADSR envelopes as MIDI CC
-
-  int   currentPage = (int) (now / PAGE_DURATION_S);
-  float pageStart   = currentPage * PAGE_DURATION_S;
-  float pageEnd     = pageStart + PAGE_DURATION_S;
-
-  ArrayList<Event> pageEvents = new ArrayList<Event>();
-  for (Event e : events) {
-    if (e.t >= pageStart && e.t < pageEnd) pageEvents.add(e);
-  }
-
-  drawGrid(pageEvents, pageStart, pageEnd, now);
-  drawDragOverlay(pageStart, pageEnd);
-  drawMelody(pageStart, pageEnd, now);
-  drawMetro(pageStart, pageEnd, now);
-  drawWaveform(now, pageStart, pageEnd);
-  drawAdsrPanel(now);
-  drawHUD(now, currentPage, pageEvents.size());
-}
-
-void drawGridWaveformBackground(float pageStart, float pageEnd) {
-  float gL = gridLeft(), gR = gridRight();
-  float gT = gridTop(), gB = gridBottom();
-  float mid   = (gT + gB) * 0.5;
-  float halfH = (gB - gT) * 0.48;
-  float pageW = gR - gL;
-  float pageDur = pageEnd - pageStart;
-  int   n = wavePeaks.length;
-
-  stroke(55, 68, 95);
-  strokeWeight(1);
-  noFill();
-  for (int px = (int)gL; px <= (int)gR; px++) {
-    float t0 = pageStart + (px - gL)       / pageW * pageDur;
-    float t1 = pageStart + (px - gL + 1.0) / pageW * pageDur;
-    if (t0 >= trackDuration) break;  // final page extends past the track — stop here
-    // Clamp BOTH ends to the valid range; near the track end t0/t1 map past
-    // the last sample, and an unclamped i0 would read out of bounds.
-    int i0 = constrain((int)(t0 / waveformWindowDur), 0, n - 1);
-    int i1 = constrain((int)(t1 / waveformWindowDur), 0, n - 1);
-    if (i1 < i0) i1 = i0;
-    float p = 0;
-    for (int i = i0; i <= i1; i++) p = max(p, wavePeaks[i]);
-    float h = p * halfH;
-    line(px, mid - h, px, mid + h);
-  }
-}
-
-void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float now) {
-  float gL = gridLeft(), gR = gridRight(), gT = gridTop(), gB = gridBottom();
-  float rowH = rowHeight();
-  float cs   = cellSize();
-  int   nRows = rowValues.length;
-
-  drawGridWaveformBackground(pageStart, pageEnd);
-
-  textAlign(LEFT, CENTER);
-  textSize(18);
-  for (int row = 0; row < nRows; row++) {
-    float y = rowCenterY(row);
-    fill(180);
-    text(rowNames[row], 24, y);
-    stroke(35);
-    strokeWeight(1);
-    line(gL, y, gR, y);
-  }
-  noStroke();
-
-  for (Event e : pageEvents) {
-    float x = eventX(e, pageStart);
-    float age = now - e.t;
-    float intensity;
-    if (e.disabled)       intensity = 0.0;
-    else if (age < 0)     intensity = 0.30;
-    else if (age > e.dur) intensity = 0.55;
-    else                  intensity = 0.55 + 0.45 * pow(1 - age / e.dur, 1.4);
-
-    for (int row = 0; row < nRows; row++) {
-      int b = e.bucketIdx[row];
-      if (b < 0) continue;
-      color c = palettes[row][b];
-      float y = rowCenterY(row);
-
-      // Outline
-      noFill();
-      if (e.disabled) {
-        stroke(80);
-        strokeWeight(1);
-      } else {
-        stroke(red(c) * 0.5, green(c) * 0.5, blue(c) * 0.5);
-        strokeWeight(1);
-      }
-      rect(x - cs / 2, y - cs / 2, cs, cs, 5);
-
-      if (!e.disabled) {
-        noStroke();
-        float s = cs * (0.4 + 0.6 * intensity);
-        fill(red(c) * intensity, green(c) * intensity, blue(c) * intensity);
-        rect(x - s / 2, y - s / 2, s, s, 3);
-      }
-    }
-
-    // Strike-through for disabled events
-    if (e.disabled) {
-      stroke(120, 80, 80);
-      strokeWeight(1);
-      line(x - cs / 2, gT + 6, x + cs / 2, gB - 6);
-    }
-  }
-
-  // Playhead
-  if (now >= pageStart && now < pageEnd) {
-    float playX = gL + (now - pageStart) / PAGE_DURATION_S * (gR - gL);
-    stroke(255, 200, 50, 200);
-    strokeWeight(2);
-    line(playX, gT - 12, playX, gB + 12);
-    noStroke();
-  }
-
-  // Hover highlight: ring around the transient_cluster cell of the hovered event.
-  if (hoverEventIdx >= 0 && hoverEventIdx < events.size()) {
-    Event he = events.get(hoverEventIdx);
-    if (he.t >= pageStart && he.t < pageEnd) {
-      int clusterRow = csvCols.length - 1;  // transient_cluster is always last
-      float hx = eventX(he, pageStart);
-      float hy = rowCenterY(clusterRow);
-      noFill();
-      stroke(255, 255, 255, 200);
-      strokeWeight(2);
-      rect(hx - cs / 2 - 4, hy - cs / 2 - 4, cs + 8, cs + 8, 7);
-      noStroke();
-    }
-  }
-}
-
-void drawMelody(float pageStart, float pageEnd, float now) {
-  if (melodyNotes == null || melodyNotes.isEmpty()) return;
-  float gL = gridLeft(), gR = gridRight();
-  float rowH = melodyRowH();
-
-  // Row labels + baselines — only for stems with enough notes to be meaningful.
-  textAlign(LEFT, CENTER);
-  textSize(14);
-  for (int i = 0; i < MELODY_STEMS.length; i++) {
-    ArrayList<Note> list = melodyNotes.get(i);
-    if (list == null || list.size() < 20) continue;
-    float y = melodyRowY(i);
-    fill(150);
-    text(MELODY_STEMS[i], 24, y);
-    stroke(35);
-    strokeWeight(1);
-    line(gL, y, gR, y);
-  }
-
-  // Each note is a horizontal pitched bar from start to end, color = chroma.
-  // The bar's vertical position within the row encodes octave: low MIDI sits
-  // toward the bottom of the row, high MIDI toward the top. This gives a
-  // mini piano-roll without giving up the row-per-stem framing.
-  for (int i = 0; i < melodyNotes.size(); i++) {
-    ArrayList<Note> list = melodyNotes.get(i);
-    if (list == null || list.size() < 20) continue;
-    int loMidi = stemPitchLo(i);
-    int hiMidi = stemPitchHi(i);
-    float yCenter = melodyRowY(i);
-    float yMin = yCenter - rowH * 0.40;
-    float yMax = yCenter + rowH * 0.40;
-
-    for (Note n : list) {
-      // Skip notes outside the current page window; clamp the bar to the
-      // visible extent if a note straddles a page boundary.
-      if (n.endTime < pageStart || n.startTime >= pageEnd) continue;
-      float t0 = max(n.startTime, pageStart);
-      float t1 = min(n.endTime,   pageEnd);
-      float x0 = gL + (t0 - pageStart) / PAGE_DURATION_S * (gR - gL);
-      float x1 = gL + (t1 - pageStart) / PAGE_DURATION_S * (gR - gL);
-      float w  = max(2, x1 - x0);
-
-      float pitchNorm = constrain((float)(n.midi - loMidi) / max(1, hiMidi - loMidi), 0, 1);
-      float yBar = lerp(yMax, yMin, pitchNorm);  // low at bottom, high at top
-      float barH = max(4, rowH * 0.15);
-
-      color c = colorForMidi(n.midi);
-      boolean playing = (now >= n.startTime && now < n.endTime);
-      float intensity = playing ? 1.0 : 0.55;
-      // Confidence dims low-probability notes so glitches read as faint.
-      float alphaMul = 0.45 + 0.55 * constrain(n.confidence, 0, 1);
-
-      noStroke();
-      fill(red(c) * intensity, green(c) * intensity, blue(c) * intensity, 255 * alphaMul);
-      rect(x0, yBar - barH / 2, w, barH, 2);
-
-      if (playing) {
-        // Halo around the currently-playing note + name label centered in it.
-        noFill();
-        stroke(red(c), green(c), blue(c), 220);
-        strokeWeight(1.5);
-        rect(x0 - 2, yBar - barH / 2 - 2, w + 4, barH + 4, 3);
-        if (w > 28) {
-          noStroke();
-          fill(20, 20, 28, 220);
-          textAlign(CENTER, CENTER);
-          textSize(11);
-          text(n.name, x0 + w / 2, yBar);
-          textAlign(LEFT, CENTER);
-        }
-      }
-    }
-  }
-  noStroke();
-
-  // Playhead across the panel.
-  if (now >= pageStart && now < pageEnd) {
-    float playX = gL + (now - pageStart) / PAGE_DURATION_S * (gR - gL);
-    stroke(255, 200, 50, 160);
-    strokeWeight(2);
-    line(playX, melodyTop() - 4, playX, melodyBottom() + 4);
-    noStroke();
-  }
-}
-
-// Stem-typical MIDI ranges for the piano-roll y-mapping. Values mirror the
-// pyin search ranges in synchronizer/melody.py, so notes detected for each
-// stem land naturally inside its row.
-int stemPitchLo(int stemIdx) {
-  switch (MELODY_STEMS[stemIdx]) {
-    case "vocals": return 40;   // E2
-    case "bass":   return 24;   // C1
-    case "other":  return 36;   // C2
-    default:       return 36;
-  }
-}
-int stemPitchHi(int stemIdx) {
-  switch (MELODY_STEMS[stemIdx]) {
-    case "vocals": return 84;   // C6
-    case "bass":   return 72;   // C5
-    case "other":  return 96;   // C7
-    default:       return 96;
-  }
-}
-
-void drawMetro(float pageStart, float pageEnd, float now) {
-  float gL = gridLeft(), gR = gridRight();
-  float rowH = metroRowH();
-
-  // Row labels + baselines.
-  textAlign(LEFT, CENTER);
-  textSize(14);
-  for (int i = 0; i < DIVISIONS.length; i++) {
-    float y = metroRowY(i);
-    fill(150);
-    text("1/" + DIVISIONS[i], 24, y);
-    stroke(35);
-    strokeWeight(1);
-    line(gL, y, gR, y);
-  }
-
-  // Ticks within the current page window.
-  for (GridTick g : gridTicks) {
-    if (g.t < pageStart || g.t >= pageEnd) continue;
-    int row = divisionRow(g.division);
-    float x = gL + (g.t - pageStart) / PAGE_DURATION_S * (gR - gL);
-    float y = metroRowY(row);
-    color c = divisionColors[row];
-    boolean onBeat = (g.phase == 0);
-    float baseH = rowH * (onBeat ? 0.42 : 0.26);
-
-    // Flash as the playhead crosses the tick (brief pre-roll, then fade out).
-    float age = now - g.t;
-    float flash = (age >= -0.015 && age < 0.14) ? constrain(1 - age / 0.14, 0, 1) : 0;
-
-    // Dim baseline mark (the static grid).
-    stroke(red(c) * 0.55, green(c) * 0.55, blue(c) * 0.55, onBeat ? 200 : 110);
-    strokeWeight(onBeat ? 2 : 1);
-    line(x, y - baseH, x, y + baseH);
-
-    // Bright pulse + glow dot on hit.
-    if (flash > 0) {
-      float h = baseH * (1 + 0.6 * flash);
-      stroke(red(c), green(c), blue(c), 180 + 75 * flash);
-      strokeWeight(onBeat ? 4 : 3);
-      line(x, y - h, x, y + h);
-      noStroke();
-      fill(red(c), green(c), blue(c), 200 * flash);
-      float r = (onBeat ? 7 : 5) * flash;
-      ellipse(x, y, r * 2, r * 2);
-    }
-  }
-  noStroke();
-
-  // Playhead across the panel (matches the event-grid / waveform playhead).
-  if (now >= pageStart && now < pageEnd) {
-    float playX = gL + (now - pageStart) / PAGE_DURATION_S * (gR - gL);
-    stroke(255, 200, 50, 160);
-    strokeWeight(2);
-    line(playX, metroTop() - 6, playX, metroBottom() + 6);
-    noStroke();
-  }
-}
-
-void drawDragOverlay(float pageStart, float pageEnd) {
-  if (dragEventIdx < 0) return;
-  Event e = events.get(dragEventIdx);
-  if (e.t < pageStart || e.t >= pageEnd) return;  // dragged event scrolled off page
-  float x = eventX(e, pageStart);
-  float y = rowCenterY(dragRow);
-  float cs = cellSize();
-  noFill();
-  stroke(255, 230, 80);
-  strokeWeight(2);
-  rect(x - cs / 2 - 5, y - cs / 2 - 5, cs + 10, cs + 10, 7);
-  noStroke();
-}
-
-void drawWaveform(float now, float pageStart, float pageEnd) {
-  float wLeft   = 40;
-  float wTop    = height - 160;
-  float wW      = panelLeft() - 60;   // buffer was built to this width
-  float wH      = 110;
-  float wRight  = wLeft + wW;
-  float wBottom = wTop + wH;
-
-  image(waveformBuffer, wLeft, wTop);
-
-  noStroke();
-  float pageX0 = wLeft + constrain(pageStart, 0, trackDuration) / trackDuration * wW;
-  float pageX1 = wLeft + constrain(pageEnd,   0, trackDuration) / trackDuration * wW;
-  fill(255, 200, 50, 55);
-  rect(pageX0, wTop, max(2, pageX1 - pageX0), wH);
-
-  float playX = wLeft + constrain(now, 0, trackDuration) / trackDuration * wW;
-  stroke(255, 200, 50);
-  strokeWeight(2);
-  line(playX, wTop - 6, playX, wBottom + 6);
-  noStroke();
-}
-
-void drawHUD(float now, int page, int eventsThisPage) {
-  int disabledCount = 0;
-  for (Event e : events) if (e.disabled) disabledCount++;
-
-  fill(200);
-  textAlign(LEFT, TOP);
-  textSize(14);
-  String rateStr = (playbackRate != 1.0) ? "  [" + nf(playbackRate, 1, 2) + "x]" : "";
-  String state = (sound.isPlaying() ? "" : "  [PAUSED]") + rateStr;
-
-  int segIdx = currentSegmentIndex(now);
-  String segLabel;
-  if (segIdx >= 0) {
-    Segment s = segments.get(segIdx);
-    color c = segmentColors[constrain(s.label, 0, N_SEGMENT_LABELS - 1)];
-    fill(red(c), green(c), blue(c));
-    segLabel = "   segment " + (segIdx + 1) + "/" + segments.size() +
-               " (label " + s.label + ")";
-  } else {
-    segLabel = "";
-  }
-  text(
-    nf(now, 1, 2) + "s / " + nf(trackDuration, 1, 2) + "s   " +
-    "page " + page + "   events on page: " + eventsThisPage + "   " +
-    "disabled: " + disabledCount + segLabel + state,
-    24, 24
-  );
-  fill(200);
-
-  // Right-align hint text to just left of the panel.
-  float hintR = panelLeft() - 20;
-  textAlign(RIGHT, TOP);
-  String snapHint = gridSnapEnabled ? "snap:on" : "snap:off";
-  text("space play/pause   ← → page   r start   q " + snapHint +
-       "   -/= speed   m midi   ctrl/cmd+s save", hintR, 24);
-  boolean midiOk = (midiOut != null && midiOut.isOpen());
-  String midiStatus = midiOk
-    ? ("MIDI → " + midiOut.portName() + (midiEnabled ? "" : "  (muted)"))
-    : "MIDI: off (port not found)";
-  fill(midiOk && midiEnabled ? color(120, 220, 140) : color(210, 160, 80));
-  text(midiStatus, hintR, 44);
-  fill(200);
-
-  if (dragEventIdx >= 0) {
-    Event e = events.get(dragEventIdx);
-    int bi = e.bucketIdx[dragRow];
-    String name = rowNames[dragRow];
-    String fromVal = rowValues[dragRow][dragStartBucket];
-    String toVal   = (bi >= 0 ? rowValues[dragRow][bi] : "?");
-    fill(255, 230, 80);
-    textAlign(LEFT, TOP);
-    text("editing event " + dragEventIdx + " — " + name + ": " + fromVal + " → " + toVal, 24, 50);
-  } else if (hoverEventIdx >= 0 && hoverEventIdx < events.size()) {
-    Event e = events.get(hoverEventIdx);
-    int clusterRow = csvCols.length - 1;
-    int cur = e.bucketIdx[clusterRow];
-    String curLabel = (cur >= 0 && cur < rowValues[clusterRow].length) ? rowValues[clusterRow][cur] : "?";
-    fill(200, 200, 255);
-    textAlign(LEFT, TOP);
-    text("event " + hoverEventIdx + "   cluster: " + curLabel +
-         "   press 0-" + (rowValues[clusterRow].length - 1) + " to reassign", 24, 50);
-  }
-
-  if (savedNoticeUntil > millis()) {
-    fill(120, 220, 140);
-    textAlign(LEFT, TOP);
-    text(savedNotice, 24, 50);
-  }
-
-  textAlign(LEFT, CENTER);
-}
-
-// --- Mouse: edits ------------------------------------------------------------
-
-int findEventNear(float mx, float my) {
-  // Hit-test against events on the current page. Returns event index, or -1.
-  float now = sound.position();
-  float pageStart = pageStartFor(now);
-  float pageEnd   = pageStart + PAGE_DURATION_S;
-  float cs = cellSize();
-  float maxDx = cs / 2 + 6;
-
-  if (mx < gridLeft() - maxDx || mx > gridRight() + maxDx) return -1;
-  if (my < gridTop() || my > gridBottom()) return -1;
-
-  int best = -1;
-  float bestDx = maxDx;
-  for (int i = 0; i < events.size(); i++) {
-    Event e = events.get(i);
-    if (e.t < pageStart || e.t >= pageEnd) continue;
-    float x = eventX(e, pageStart);
-    float dx = abs(mx - x);
-    if (dx < bestDx) {
-      bestDx = dx;
-      best = i;
-    }
-  }
-  return best;
-}
-
-int rowAt(float my) {
-  // Returns row index if my is within cellSize/2 of a row's center, else -1.
-  float cs = cellSize();
-  for (int row = 0; row < rowValues.length; row++) {
-    if (abs(my - rowCenterY(row)) <= cs / 2 + 2) return row;
-  }
-  return -1;
-}
-
-void mousePressed() {
-  if (mouseX >= panelLeft()) { panelMousePressed(); return; }
-
-  int eventIdx = findEventNear(mouseX, mouseY);
-  if (eventIdx < 0) return;
-  if (mouseButton == LEFT) {
-    Event e = events.get(eventIdx);
-    if (mouseEvent.isShiftDown()) {
-      stopAtTime = e.origT + e.dur;
-      sound.jump(e.origT);
-      sound.rate(playbackRate);
-    } else {
-      e.disabled = !e.disabled;
-    }
-  } else if (mouseButton == RIGHT) {
-    int row = rowAt(mouseY);
-    if (row < 0) return;
-    Event e = events.get(eventIdx);
-    if (e.bucketIdx[row] < 0) return;  // can't drag a cell with no known bucket
-    dragEventIdx    = eventIdx;
-    dragRow         = row;
-    dragStartBucket = e.bucketIdx[row];
-    dragStartY      = mouseY;
-  }
-}
-
-void mouseDragged() {
-  if (sliderDragCluster >= 0) { panelMouseDragged(); return; }
-  if (dragEventIdx < 0) return;
-  float deltaY = dragStartY - mouseY;  // drag up = positive
-  int steps = (int) (deltaY / DRAG_PIXELS_PER_STEP);
-  int nBuckets = rowValues[dragRow].length;
-  int newIdx = constrain(dragStartBucket + steps, 0, nBuckets - 1);
-  events.get(dragEventIdx).bucketIdx[dragRow] = newIdx;
-}
-
-void mouseReleased() {
-  if (sliderDragCluster >= 0) {
-    sliderDragCluster = -1;
-    sliderDragParam   = -1;
-    saveAdsr();  // persist on drag end
-    return;
-  }
-  dragEventIdx = -1;
-  dragRow      = -1;
-}
-
-void mouseMoved() {
-  if (mouseX >= panelLeft()) { hoverEventIdx = -1; return; }
-  hoverEventIdx = findEventNear(mouseX, mouseY);
-}
-
-// --- Keys --------------------------------------------------------------------
-
-void keyPressed() {
-  // ctrl/cmd + s — save events CSV
-  if ((keyEvent.isControlDown() || keyEvent.isMetaDown())
-      && (key == 's' || key == 'S' || key == '')) {
-    saveEdits();
-    return;
-  }
-  if (key == ' ') {
-    stopAtTime = -1;
-    if (sound.isPlaying()) sound.pause();
-    else sound.play();
-    return;
-  }
-  if (key == 'r' || key == 'R') {
-    seek(0);
-    return;
-  }
-  if (keyCode == LEFT) {
-    seek(sound.position() - PAGE_DURATION_S);
-  } else if (keyCode == RIGHT) {
-    seek(sound.position() + PAGE_DURATION_S);
-  }
-  if (key == 'q' || key == 'Q') {
-    gridSnapEnabled = !gridSnapEnabled;
-    applyGridSnap();
-  }
-  if (key == '-' || key == '_') {
-    playbackRate = max(0.25, playbackRate - 0.25);
-    sound.rate(playbackRate);
-  }
-  if (key == '=' || key == '+') {
-    playbackRate = min(2.0, playbackRate + 0.25);
-    sound.rate(playbackRate);
-  }
-  if (key == 'm' || key == 'M') {
-    midiEnabled = !midiEnabled;  // updateMidi() sends 0s on the next frame when off
-  }
-  // Digit keys: reassign hovered event's transient_cluster.
-  if (key >= '0' && key <= '9') {
-    int digit = key - '0';
-    if (hoverEventIdx >= 0) {
-      int clusterRow = csvCols.length - 1;
-      if (digit < rowValues[clusterRow].length) {
-        events.get(hoverEventIdx).bucketIdx[clusterRow] = digit;
-      }
-    }
-  }
-}
-
-void seek(float target) {
-  stopAtTime = -1;
-  target = constrain(target, 0, max(0, trackDuration - 0.05));
-  boolean wasPlaying = sound.isPlaying();
-  sound.jump(target);
-  sound.rate(playbackRate);
-  if (!wasPlaying) sound.pause();
-}
-
-// --- Save --------------------------------------------------------------------
-
-void saveEdits() {
-  String baseStem = CSV_FILE.replaceAll("\\.csv$", "");
-  int v = findNextVersion(baseStem);
-  String saveName = baseStem + "_v" + v + ".csv";
-
-  Table out = new Table();
-  for (int col = 0; col < eventsTable.getColumnCount(); col++) {
-    out.addColumn(eventsTable.getColumnTitle(col));
-  }
-  int written = 0;
-  int disabled = 0;
-  for (Event e : events) {
-    if (e.disabled) { disabled++; continue; }
-    TableRow src = eventsTable.getRow(e.rowIndex);
-    TableRow dst = out.addRow();
-    for (int col = 0; col < eventsTable.getColumnCount(); col++) {
-      dst.setString(col, src.getString(col));
-    }
-    for (int row = 0; row < rowValues.length; row++) {
-      int bi = e.bucketIdx[row];
-      if (bi >= 0) dst.setString(csvCols[row], rowValues[row][bi]);
-    }
-    written++;
-  }
-  saveTable(out, dataPath(saveName));
-
-  savedNotice      = "saved " + saveName + " — " + written + " events (" + disabled + " disabled)";
-  savedNoticeUntil = millis() + 4000;
-  println(savedNotice);
-}
-
-int findNextVersion(String baseStem) {
-  File dir = new File(dataPath(""));
-  String prefix = baseStem + "_v";
-  int maxV = 0;
-  if (dir.exists() && dir.isDirectory()) {
-    File[] files = dir.listFiles();
-    if (files != null) {
-      for (File f : files) {
-        String name = f.getName();
-        if (name.startsWith(prefix) && name.endsWith(".csv")) {
-          String mid = name.substring(prefix.length(), name.length() - 4);
-          try {
-            int v = Integer.parseInt(mid);
-            if (v > maxV) maxV = v;
-          } catch (NumberFormatException nfe) {}
-        }
-      }
-    }
-  }
-  return maxV + 1;
-}
-
-// --- ADSR model + persistence ------------------------------------------------
-
-void initAdsr() {
-  int n = N_TRANSIENT_CLUSTERS;
-  attackFrac   = new float[n];
-  decayFrac    = new float[n];
-  sustainLevel = new float[n];
-  releaseFrac  = new float[n];
-  attackExp    = new boolean[n];
-  decayExp     = new boolean[n];
-  ccVal        = new float[n];
-  lastSent     = new int[n];
-  for (int i = 0; i < n; i++) {
-    // Defaults vary by cluster index so clusters start audibly distinct.
-    attackFrac[i]   = 0.04 + 0.04 * (i % 3);
-    decayFrac[i]    = 0.18;
-    sustainLevel[i] = 0.65 - 0.10 * (i % 3);
-    releaseFrac[i]  = 0.25 + 0.05 * (i % 3);
-    attackExp[i]    = false;
-    decayExp[i]     = false;
-    clampAdsr(i);
-    ccVal[i]    = 0;
-    lastSent[i] = -1;  // force a send on the first frame
-  }
-  loadAdsr();
-}
-
-void clampAdsr(int c) {
-  attackFrac[c]   = constrain(attackFrac[c], 0, 1);
-  decayFrac[c]    = constrain(decayFrac[c], 0, 1 - attackFrac[c]);
-  releaseFrac[c]  = constrain(releaseFrac[c], 0, 1 - attackFrac[c] - decayFrac[c]);
-  sustainLevel[c] = constrain(sustainLevel[c], 0, 1);
-}
-
-String adsrFileName() {
-  return CSV_FILE.replaceAll("\\.csv$", "") + "_adsr.csv";
-}
-
-void loadAdsr() {
-  File f = new File(dataPath(adsrFileName()));
-  if (!f.exists()) return;  // optional — defaults stand otherwise
-  Table t = loadTable(adsrFileName(), "header");
-  // Check for the exp-shape columns added in the panel version.
-  boolean hasExp = false;
-  for (int i = 0; i < t.getColumnCount(); i++) {
-    if (t.getColumnTitle(i).equals("attack_exp")) { hasExp = true; break; }
-  }
-  for (TableRow r : t.rows()) {
-    int c = r.getInt("cluster");
-    if (c < 0 || c >= N_TRANSIENT_CLUSTERS) continue;
-    attackFrac[c]   = r.getFloat("attack");
-    decayFrac[c]    = r.getFloat("decay");
-    sustainLevel[c] = r.getFloat("sustain");
-    releaseFrac[c]  = r.getFloat("release");
-    if (hasExp) {
-      attackExp[c] = r.getInt("attack_exp") != 0;
-      decayExp[c]  = r.getInt("decay_exp")  != 0;
-    }
-    clampAdsr(c);
-  }
-}
-
-void saveAdsr() {
-  Table out = new Table();
-  out.addColumn("cluster");
-  out.addColumn("attack");
-  out.addColumn("decay");
-  out.addColumn("sustain");
-  out.addColumn("release");
-  out.addColumn("attack_exp");
-  out.addColumn("decay_exp");
-  for (int c = 0; c < N_TRANSIENT_CLUSTERS; c++) {
-    TableRow row = out.addRow();
-    row.setInt("cluster",    c);
-    row.setFloat("attack",   attackFrac[c]);
-    row.setFloat("decay",    decayFrac[c]);
-    row.setFloat("sustain",  sustainLevel[c]);
-    row.setFloat("release",  releaseFrac[c]);
-    row.setInt("attack_exp", attackExp[c] ? 1 : 0);
-    row.setInt("decay_exp",  decayExp[c]  ? 1 : 0);
-  }
-  saveTable(out, dataPath(adsrFileName()));
-  savedNotice      = "saved " + adsrFileName();
-  savedNoticeUntil = millis() + 2000;
-  println(savedNotice);
-}
-
-// Envelope value at normalized phase p in [0,1).
-//
-// Attack shape:
-//   linear  — straight ramp 0 → 1
-//   exp     — t² curve (slow start, snappy peak — typical for percussive hits)
-//
-// Decay shape:
-//   linear  — straight ramp 1 → S
-//   exp     — (1-t)² curve (fast initial drop, slow approach to sustain —
-//             natural capacitor-discharge feel)
-//
-// Release is always linear (S → 0).
-float envValue(int c, float p) {
-  if (p < 0 || p >= 1) return 0;
-  float aF = attackFrac[c], dF = decayFrac[c], rF = releaseFrac[c], S = sustainLevel[c];
-  float relStart = 1 - rF;
-  if (p < aF) {
-    float t = aF > 0 ? p / aF : 1.0;          // 0→1 through attack
-    return attackExp[c] ? t * t : t;
-  } else if (p < aF + dF) {
-    float t = dF > 0 ? (p - aF) / dF : 1.0;   // 0→1 through decay
-    if (decayExp[c]) {
-      float inv = 1.0 - t;
-      return S + (1.0 - S) * inv * inv;         // (1-t)²: fast drop, slow plateau
-    }
-    return 1.0 - (1.0 - S) * t;                 // linear
-  } else if (p < relStart) {
-    return S;                                    // sustain
-  } else {
-    float t = rF > 0 ? (p - relStart) / rF : 1.0;
-    return S * (1.0 - t);                        // linear release S→0
-  }
-}
-
-// --- MIDI output (javax.sound.midi) ------------------------------------------
-
-void initMidi() {
-  midiOut = new MidiOut(MIDI_PORT_NAME);
-}
-
-void sendCC(int cc, int val) {
-  if (midiOut != null) midiOut.sendCC(MIDI_CHANNEL, cc, val);
-}
-
-void closeMidi() {
-  if (midiOut != null) { midiOut.close(); midiOut = null; }
-}
-
-void dispose() {
-  if (midiOut != null && midiOut.isOpen()) {
-    for (int c = 0; c < N_TRANSIENT_CLUSTERS; c++) sendCC(BASE_CC + c, 0);  // release all
-  }
-  closeMidi();
-  super.dispose();
-}
-
-// Stateless per-frame envelope -> CC send. Computing purely from `now` means
-// pause (now frozen -> values hold), seek, and playback-rate changes are all
-// handled automatically. Polyphony of overlapping same-cluster transients is
-// resolved by taking the max envelope value. Dedup: only send on change.
-void updateMidi(float now) {
-  int nc = N_TRANSIENT_CLUSTERS;
-  for (int c = 0; c < nc; c++) ccVal[c] = 0;
-
-  boolean releasing = RELEASE_ON_PAUSE && !sound.isPlaying();
-  if (!releasing) {
-    int clusterRow = csvCols.length - 1;
-    for (Event e : events) {
-      if (e.disabled) continue;
-      float envLen = max(e.dur, MIN_ENV_S);
-      float p = (now - e.origT) / envLen;
-      if (p < 0 || p >= 1) continue;
-      int c = e.bucketIdx[clusterRow];
-      if (c < 0 || c >= nc) continue;
-      float v = envValue(c, p);
-      if (v > ccVal[c]) ccVal[c] = v;
-    }
-  }
-
-  for (int c = 0; c < nc; c++) {
-    int q = midiEnabled ? constrain(round(ccVal[c] * 127), 0, 127) : 0;
-    if (q != lastSent[c]) {
-      sendCC(BASE_CC + c, q);
-      lastSent[c] = q;
-    }
-  }
-}
-
-// --- Right-panel ADSR editor -------------------------------------------------
-
-void drawAdsrPanel(float now) {
-  float pL = panelLeft();
-  float pW = panelW();
-
-  // Panel background + left border.
-  noStroke();
-  fill(14, 16, 24);
-  rect(pL, 0, pW, height);
-  stroke(42);
-  strokeWeight(1);
-  line(pL, 0, pL, height);
-  noStroke();
-
-  fill(100);
-  textAlign(LEFT, TOP);
-  textSize(11);
-  text("ADSR  ENVELOPES", pL + 8, 8);
-
-  for (int c = 0; c < N_TRANSIENT_CLUSTERS; c++) {
-    drawPanelCluster(c, now);
-    // Divider between clusters.
-    if (c < N_TRANSIENT_CLUSTERS - 1) {
-      stroke(38);
-      strokeWeight(1);
-      line(pL + 6, panelClusterY(c + 1) - 4, pL + pW - 6, panelClusterY(c + 1) - 4);
-      noStroke();
-    }
-  }
-}
-
-void drawPanelCluster(int c, float now) {
-  float pL = panelLeft();
-  float cy = panelClusterY(c);
-  color col = palettes[4][c];
-
-  // Cluster header strip.
-  noStroke();
-  fill(red(col) * 0.22, green(col) * 0.22, blue(col) * 0.22);
-  rect(pL + 4, cy + 4, panelW() - 8, 24, 4);
-  fill(red(col), green(col), blue(col));
-  textAlign(LEFT, CENTER);
-  textSize(13);
-  text("cluster " + c + "    CC " + (BASE_CC + c), pL + 12, cy + 16);
-
-  drawPanelEnvCurve(c, now);
-  drawPanelSlider(c, 0, "A", attackFrac[c]);
-  drawPanelSlider(c, 1, "D", decayFrac[c]);
-  drawPanelSlider(c, 2, "S", sustainLevel[c]);
-  drawPanelSlider(c, 3, "R", releaseFrac[c]);
-  drawShapeToggles(c);
-  drawPanelMeter(c);
-}
-
-void drawPanelEnvCurve(int c, float now) {
-  float pL = panelLeft();
-  float cL = pL + 6;
-  float cR = pL + panelW() - 6;
-  float cT = panelCurveT(c);
-  float cB = panelCurveB(c);
-  color col = palettes[4][c];
-
-  // Background.
-  noStroke();
-  fill(9, 11, 18);
-  rect(cL, cT, cR - cL, cB - cT, 3);
-
-  // Faint grid: midline and sustain level.
-  float midY = (cT + cB) * 0.5;
-  stroke(28);
-  strokeWeight(1);
-  line(cL + 2, midY, cR - 2, midY);
-  float sY = map(sustainLevel[c], 0, 1, cB, cT);
-  stroke(38);
-  line(cL + 2, sY, cR - 2, sY);
-
-  // ADSR phase boundary markers (faint verticals at A end, D end, R start).
-  float xA = map(attackFrac[c],                  0, 1, cL, cR);
-  float xD = map(attackFrac[c] + decayFrac[c],   0, 1, cL, cR);
-  float xR = map(1 - releaseFrac[c],             0, 1, cL, cR);
-  stroke(35);
-  strokeWeight(1);
-  line(xA, cT + 2, xA, cB - 2);
-  line(xD, cT + 2, xD, cB - 2);
-  line(xR, cT + 2, xR, cB - 2);
-
-  // Filled area under the curve.
-  noStroke();
-  fill(red(col) * 0.15, green(col) * 0.15, blue(col) * 0.15);
-  beginShape();
-  vertex(cL, cB);
-  for (int i = 0; i <= 200; i++) {
-    float p = (i / 200.0) * 0.9999;
-    float v = envValue(c, p);
-    vertex(map(p, 0, 1, cL, cR), map(v, 0, 1, cB, cT));
-  }
-  vertex(cR, cB);
-  endShape(CLOSE);
-
-  // Envelope curve line.
-  stroke(red(col), green(col), blue(col), 220);
-  strokeWeight(2);
-  noFill();
-  beginShape();
-  for (int i = 0; i <= 200; i++) {
-    float p = (i / 200.0) * 0.9999;
-    float v = envValue(c, p);
-    vertex(map(p, 0, 1, cL, cR), map(v, 0, 1, cB, cT));
-  }
-  endShape();
-
-  // Playhead dot: show where the loudest currently-active transient sits in the envelope.
-  int clusterRow = csvCols.length - 1;
-  float maxPhase = -1;
-  for (Event e : events) {
-    if (e.disabled || e.bucketIdx[clusterRow] != c) continue;
-    float envLen = max(e.dur, MIN_ENV_S);
-    float p = (now - e.origT) / envLen;
-    if (p >= 0 && p < 1 && p > maxPhase) maxPhase = p;
-  }
-  if (maxPhase >= 0) {
-    float px = map(maxPhase, 0, 1, cL, cR);
-    float pv = envValue(c, maxPhase);
-    float py = map(pv, 0, 1, cB, cT);
-    // Vertical phase line.
-    stroke(255, 255, 180, 60);
-    strokeWeight(1);
-    line(px, cT + 2, px, cB - 2);
-    // Dot on curve.
-    noStroke();
-    fill(255, 255, 200, 210);
-    ellipse(px, py, 7, 7);
-  }
-
-  // Frame.
-  noFill();
-  stroke(46);
-  strokeWeight(1);
-  rect(cL, cT, cR - cL, cB - cT, 3);
-
-  // Phase labels (A D S R) above the curve near each boundary.
-  fill(80);
-  textSize(10);
-  textAlign(CENTER, BOTTOM);
-  text("A", (cL + xA) * 0.5, cT - 1);
-  text("D", (xA + xD) * 0.5, cT - 1);
-  if (xR - xD > 12) text("S", (xD + xR) * 0.5, cT - 1);
-  text("R", (xR + cR) * 0.5, cT - 1);
-
-  noStroke();
-}
-
-// Draws one ADSR slider (param 0=A, 1=D, 2=S, 3=R) with label and value.
-void drawPanelSlider(int c, int param, String label, float value) {
-  float pL    = panelLeft();
-  float trackY = panelSliderY(c, param);
-  float tL    = slTrackL();
-  float tR    = slTrackR();
-  float hX    = slValX(value);
-  float tH    = 4;
-  float hR    = 7;  // handle radius
-  color col   = palettes[4][c];
-
-  // "A  0.12" combined label at left.
-  fill(160);
-  textAlign(RIGHT, CENTER);
-  textSize(11);
-  text(label + " " + nf(value, 1, 2), pL + 58, trackY);
-
-  // Track background.
-  noStroke();
-  fill(32);
-  rect(tL, trackY - tH * 0.5, tR - tL, tH, 2);
-
-  // Filled portion (cluster color, dimmed).
-  fill(red(col) * 0.55, green(col) * 0.55, blue(col) * 0.55);
-  rect(tL, trackY - tH * 0.5, max(0, hX - tL), tH, 2);
-
-  // Handle.
-  boolean active = (sliderDragCluster == c && sliderDragParam == param);
-  noStroke();
-  fill(active ? color(255, 255, 255) : color(195, 205, 225));
-  ellipse(hX, trackY, hR * 2, hR * 2);
-
-  // Faint inner dot for depth.
-  fill(active ? color(60) : color(40));
-  ellipse(hX, trackY, hR * 0.8, hR * 0.8);
-}
-
-// Draws LIN/EXP shape toggles for attack and decay.
-void drawShapeToggles(int c) {
-  float pL = panelLeft();
-  float ty  = panelToggleY(c);
-  float bW  = 40, bH = 20;
-  float bHH = bH * 0.5;
-
-  // "A:" label.
-  fill(130);
-  textSize(11);
-  textAlign(RIGHT, CENTER);
-  text("A", pL + 24, ty);
-
-  // A-LIN button.
-  drawToggleBtn(pL + 26, ty, bW, bH, !attackExp[c], "LIN", palettes[4][c]);
-  // A-EXP button.
-  drawToggleBtn(pL + 68, ty, bW, bH, attackExp[c],  "EXP", palettes[4][c]);
-
-  // "D:" label.
-  fill(130);
-  textAlign(RIGHT, CENTER);
-  text("D", pL + 148, ty);
-
-  // D-LIN button.
-  drawToggleBtn(pL + 150, ty, bW, bH, !decayExp[c], "LIN", palettes[4][c]);
-  // D-EXP button.
-  drawToggleBtn(pL + 192, ty, bW, bH, decayExp[c],  "EXP", palettes[4][c]);
-}
-
-void drawToggleBtn(float x, float y, float bW, float bH, boolean active, String label, color col) {
-  float bHH = bH * 0.5;
-  if (active) {
-    noStroke();
-    fill(red(col) * 0.55, green(col) * 0.55, blue(col) * 0.55);
-    rect(x, y - bHH, bW, bH, 3);
-    fill(red(col), green(col), blue(col));
-  } else {
-    noFill();
-    stroke(50);
-    strokeWeight(1);
-    rect(x, y - bHH, bW, bH, 3);
-    fill(90);
-    noStroke();
-  }
-  textAlign(CENTER, CENTER);
-  textSize(10);
-  text(label, x + bW * 0.5, y);
-}
-
-// CC level meter bar at the bottom of each cluster section.
-void drawPanelMeter(int c) {
-  float pL  = panelLeft();
-  float my  = panelMeterY(c);
-  float mH  = 18;
-  float mL  = pL + 8;
-  float mR  = pL + panelW() - 8;
-  float mW  = mR - mL;
-  color col = palettes[4][c];
-  float v   = constrain(ccVal[c], 0, 1);
-
-  noStroke();
-  fill(18);
-  rect(mL, my - mH * 0.5, mW, mH, 3);
-
-  fill(red(col) * 0.5, green(col) * 0.5, blue(col) * 0.5, midiEnabled ? 200 : 70);
-  rect(mL, my - mH * 0.5, mW * v, mH, 3);
-
-  noFill();
-  stroke(46);
-  strokeWeight(1);
-  rect(mL, my - mH * 0.5, mW, mH, 3);
-
-  int q = constrain(round(v * 127), 0, 127);
-  fill(midiEnabled ? color(200) : color(110));
-  textAlign(LEFT, CENTER);
-  textSize(10);
-  text("CC " + (BASE_CC + c) + "  " + q, mL + 6, my);
-  noStroke();
-}
-
-// --- Right-panel mouse interaction -------------------------------------------
-
-void panelMousePressed() {
-  float mx = mouseX, my = mouseY;
-
-  for (int c = 0; c < N_TRANSIENT_CLUSTERS; c++) {
-    // Hit-test sliders (hit zone extends ±12px from center y, full track x).
-    for (int p = 0; p < 4; p++) {
-      float sy = panelSliderY(c, p);
-      if (abs(my - sy) <= 12 && mx >= slTrackL() - 10 && mx <= slTrackR() + 10) {
-        sliderDragCluster = c;
-        sliderDragParam   = p;
-        applySliderDrag(c, p, mx);
-        return;
-      }
-    }
-
-    // Hit-test shape toggle buttons.
-    float ty  = panelToggleY(c);
-    float bHH = 10;   // half the 20px button height
-    float pL  = panelLeft();
-    if (abs(my - ty) <= bHH) {
-      if      (mx >= pL + 26  && mx <= pL + 66)  { attackExp[c] = false; saveAdsr(); return; }
-      else if (mx >= pL + 68  && mx <= pL + 108) { attackExp[c] = true;  saveAdsr(); return; }
-      else if (mx >= pL + 150 && mx <= pL + 190) { decayExp[c]  = false; saveAdsr(); return; }
-      else if (mx >= pL + 192 && mx <= pL + 232) { decayExp[c]  = true;  saveAdsr(); return; }
-    }
-  }
-}
-
-void panelMouseDragged() {
-  applySliderDrag(sliderDragCluster, sliderDragParam, mouseX);
-}
-
-void applySliderDrag(int c, int p, float mx) {
-  float v = slXtoVal(mx);
-  if      (p == 0) attackFrac[c]   = v;
-  else if (p == 1) decayFrac[c]    = v;
-  else if (p == 2) sustainLevel[c] = v;
-  else             releaseFrac[c]  = v;
-  clampAdsr(c);
-  // Invalidate lastSent so the new envelope shape is pushed to MIDI immediately.
-  for (int i = 0; i < N_TRANSIENT_CLUSTERS; i++) lastSent[i] = -1;
 }
