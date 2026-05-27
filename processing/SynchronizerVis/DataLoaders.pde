@@ -166,16 +166,10 @@ int currentSegmentIndex(float now) {
 
 void buildPalettes() {
   palettes = new color[rowValues.length][];
-  palettes[0] = new color[]{ color(90,90,100), color(60,110,220), color(90,200,130), color(240,100,100) };
-  palettes[1] = new color[]{ color(40,70,130), color(200,170,60), color(250,240,200) };
-  palettes[2] = new color[]{ color(90,80,120), color(160,130,200), color(220,80,230) };
-  palettes[3] = new color[N_TIMBRE_CLUSTERS];
-  palettes[4] = new color[N_TRANSIENT_CLUSTERS];
+  palettes[0] = new color[N_TRANSIENT_CLUSTERS];
   colorMode(HSB, 360, 100, 100);
-  for (int i = 0; i < N_TIMBRE_CLUSTERS; i++)
-    palettes[3][i] = color(i * 360.0 / N_TIMBRE_CLUSTERS, 70, 95);
   for (int i = 0; i < N_TRANSIENT_CLUSTERS; i++)
-    palettes[4][i] = color(i * 360.0 / N_TRANSIENT_CLUSTERS, 85, 100);
+    palettes[0][i] = color(i * 360.0 / N_TRANSIENT_CLUSTERS, 85, 100);
   colorMode(RGB, 255);
 }
 

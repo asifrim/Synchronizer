@@ -135,11 +135,8 @@ String[]       TIMBRE;
 String[]       TRANSIENT_CLUSTER;
 
 String[][]     rowValues;
-final String[] rowNames = {"pitch", "brightness", "energy", "timbre", "cluster"};
-final String[] csvCols  = {
-  "pitch_bucket", "brightness_bucket", "energy_bucket",
-  "timbre_cluster", "transient_cluster"
-};
+final String[] rowNames = {""};
+final String[] csvCols  = {"transient_cluster"};
 
 color[][] palettes;
 
@@ -226,7 +223,7 @@ void setup() {
   for (int i = 0; i < N_TIMBRE_CLUSTERS; i++) TIMBRE[i] = str(i);
   TRANSIENT_CLUSTER = new String[N_TRANSIENT_CLUSTERS];
   for (int i = 0; i < N_TRANSIENT_CLUSTERS; i++) TRANSIENT_CLUSTER[i] = str(i);
-  rowValues = new String[][]{PITCH, BRIGHTNESS, ENERGY, TIMBRE, TRANSIENT_CLUSTER};
+  rowValues = new String[][]{TRANSIENT_CLUSTER};
 
   buildPalettes();
 
