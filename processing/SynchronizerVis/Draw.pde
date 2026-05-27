@@ -33,7 +33,7 @@ void draw() {
 void drawGridWaveformBackground(float pageStart, float pageEnd) {
   float gL = gridLeft(), gR = gridRight();
   float gT = gridTop(),  gB = gridBottom();
-  float baseline = (gT + gB) * 0.5;
+  float baseline = gB;
   float fullH    = (gB - gT) * 0.92;
   float pageW    = gR - gL;
   float pageDur  = pageEnd - pageStart;
@@ -63,19 +63,13 @@ void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float
 
   drawGridWaveformBackground(pageStart, pageEnd);
 
-  textAlign(LEFT, CENTER);
-  textSize(18);
-  for (int row = 0; row < nRows; row++) {
-    float y = rowCenterY(row);
-    fill(180);
-    text(rowNames[row], 24, y);
-    stroke(35); strokeWeight(1);
-    line(gL, y, gR, y);
-  }
+  // Baseline rule at the bottom of the grid.
+  stroke(35); strokeWeight(1);
+  line(gL, gB, gR, gB);
   noStroke();
 
   int   clusterRow = csvCols.length - 1;
-  float maxEnvH    = rowHeight() * 0.44;
+  float maxEnvH    = (gB - gT) * 0.90;
   int   N_SAMPLES  = 48;
 
   for (Event e : pageEvents) {
@@ -95,20 +89,19 @@ void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float
     for (int row = 0; row < nRows; row++) {
       int b = e.bucketIdx[row];
       if (b < 0 || e.disabled) continue;
-      color c   = palettes[row][b];
-      float cy  = rowCenterY(row);
+      color c    = palettes[row][b];
       float maxH = maxEnvH * normRms;
 
       noStroke();
       fill(red(c) * intensity, green(c) * intensity, blue(c) * intensity, 200);
       beginShape();
-      vertex(ex, cy);
+      vertex(ex, gB);
       for (int s = 0; s <= N_SAMPLES; s++) {
         float p  = (float)s / N_SAMPLES;
         float v  = envValue(cluster, p);
-        vertex(ex + p * envW, cy - v * maxH);
+        vertex(ex + p * envW, gB - v * maxH);
       }
-      vertex(ex + envW, cy);
+      vertex(ex + envW, gB);
       endShape(CLOSE);
     }
 
@@ -131,13 +124,12 @@ void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float
     Event he = events.get(hoverEventIdx);
     if (he.t >= pageStart && he.t < pageEnd) {
       float hx      = eventX(he, pageStart);
-      float hy      = rowCenterY(csvCols.length - 1);
       float hEnvW   = max(he.dur, MIN_ENV_S) / PAGE_DURATION_S * (gR - gL);
       float hNormR  = (eventNormRms != null) ? eventNormRms[he.rowIndex] : 1.0;
       float hMaxH   = maxEnvH * hNormR;
       noFill();
       stroke(255, 255, 255, 200); strokeWeight(2);
-      rect(hx - 4, hy - hMaxH - 4, hEnvW + 8, hMaxH + 8, 5);
+      rect(hx - 4, gB - hMaxH - 4, hEnvW + 8, hMaxH + 8, 5);
       noStroke();
     }
   }
@@ -268,12 +260,16 @@ void drawDragOverlay(float pageStart, float pageEnd) {
   if (dragEventIdx < 0) return;
   Event e = events.get(dragEventIdx);
   if (e.t < pageStart || e.t >= pageEnd) return;
-  float x  = eventX(e, pageStart);
-  float y  = rowCenterY(dragRow);
-  float cs = cellSize();
+  float gB   = gridBottom();
+  float gT   = gridTop();
+  float gL   = gridLeft(), gR = gridRight();
+  float ex   = eventX(e, pageStart);
+  float envW = max(e.dur, MIN_ENV_S) / PAGE_DURATION_S * (gR - gL);
+  float normR = (eventNormRms != null) ? eventNormRms[e.rowIndex] : 1.0;
+  float maxH  = (gB - gT) * 0.90 * normR;
   noFill();
   stroke(255, 230, 80); strokeWeight(2);
-  rect(x - cs / 2 - 5, y - cs / 2 - 5, cs + 10, cs + 10, 7);
+  rect(ex - 4, gB - maxH - 4, envW + 8, maxH + 8, 7);
   noStroke();
 }
 
