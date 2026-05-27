@@ -39,7 +39,7 @@ void updateMidi(float now) {
       if (p < 0 || p >= 1) continue;
       int c = e.bucketIdx[clusterRow];
       if (c < 0 || c >= nc || c >= activeK) continue;
-      float v = envValue(c, p);
+      float v = envValue(c, p) * eventNormRms[e.rowIndex];
       if (v > ccVal[c]) ccVal[c] = v;
     }
   }
