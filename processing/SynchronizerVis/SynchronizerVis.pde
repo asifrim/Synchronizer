@@ -21,13 +21,26 @@
 //                 beat" a few ms apart, so without snap the rect centers
 //                 sit just off the ticks)
 //   - / =         slow down / speed up (0.25x steps, range 0.25x–2.0x; alters pitch)
-//   ctrl/cmd+s    save edits to <basename>_v<N>.csv in data/
+//   e             toggle the per-cluster ADSR envelope editor
+//   m             toggle MIDI output on/off
+//   0-9           (grid) reassign hovered event's cluster; (editor) select cluster to edit
+//   ctrl/cmd+s    save: editor open -> ADSR config; else event edits to <basename>_v<N>.csv
 //
 // Mouse:
 //   left-click on an event        toggle disabled (excluded from saved CSV)
 //   shift+left-click on an event  preview: plays from onset for its duration, then stops
 //   right-click + drag on cell    drag up = higher bucket value
 //                                 (drag down = lower), per-row bucket ladder
+//   (editor open) drag handles    reshape the selected cluster's ADSR envelope
+//
+// MIDI output (drives TouchDesigner): as the playhead crosses each transient,
+// an ADSR envelope is emitted as a 7-bit MIDI CC. Each transient_cluster has
+// its own ADSR shape and its own CC. Contract (do not change without updating
+// the TD patch): MIDI channel 1; cluster i -> CC (BASE_CC + i); value 0-127,
+// sent only when it changes. Envelope total time = the transient's duration
+// (floored at MIN_ENV_S). Smooth the 7-bit stepping in TD with a Lag/Filter
+// CHOP. Sent to the virtual port whose name contains MIDI_PORT_NAME (loopMIDI
+// on Windows); if absent, the sketch runs as a visualizer with MIDI off.
 //
 // Data files in data/:
 //   <AUDIO_FILE>   the audio that plays (WAV/MP3/AIFF/OGG — Processing Sound
@@ -38,25 +51,28 @@
 //   <SEGMENTS_FILE> structural segments (optional), <csv_stem>_segments.csv.
 //   <GRID_FILE>    metronome ticks (optional), <csv_stem>_grid.csv.
 //   <MELODY_*_FILE> per-stem note events (optional), <csv_stem>_<stem>_melody.csv.
+//   <csv_stem>_adsr.csv  per-cluster ADSR params (optional), written by the editor.
 
 import processing.sound.*;
 import java.io.File;
+// MIDI output lives in MidiOut.java (a plain-Java tab) — the Processing
+// preprocessor can't parse javax.sound.midi's nested types in this .pde.
 
-final String AUDIO_FILE     = "02_Key_Nell.wav";
-final String CSV_FILE       = "02_Key_Nell.csv";
-final String WAVE_FILE      = "02_Key_Nell_waveform.csv";
-final String SEGMENTS_FILE  = "02_Key_Nell_segments.csv";
-final String GRID_FILE      = "02_Key_Nell_grid.csv";
+final String AUDIO_FILE     = "04_Krib.wav";
+final String CSV_FILE       = "04_Krib.csv";
+final String WAVE_FILE      = "04_Krib_waveform.csv";
+final String SEGMENTS_FILE  = "04_Krib_segments.csv";
+final String GRID_FILE      = "04_Krib_grid.csv";
 // Per-stem melody CSVs. Sketch loads each lazily (skipped if absent), so
 // adding/removing a stem just means dropping the file in or out of data/.
 final String[] MELODY_STEMS = {"vocals", "bass", "other"};
 final String[] MELODY_FILES = {
-  "02_Key_Nell_vocals_melody.csv",
-  "02_Key_Nell_bass_melody.csv",
-  "02_Key_Nell_other_melody.csv",
+  "04_Krib_vocals_melody.csv",
+  "04_Krib_bass_melody.csv",
+  "04_Krib_other_melody.csv",
 };
 final int   N_TIMBRE_CLUSTERS     = 6;
-final int   N_TRANSIENT_CLUSTERS  = 8;
+final int   N_TRANSIENT_CLUSTERS  = 2;
 final int   N_SEGMENT_LABELS  = 4;
 final int[] DIVISIONS         = {4, 8, 16, 32};  // metronome note values
 final float PAGE_DURATION_S   = 4.0;
@@ -68,6 +84,19 @@ final float DRAG_PIXELS_PER_STEP = 25;
 // tick — purely visual, the saved CSV keeps the original time. Genuinely
 // off-beat hits (> tolerance) keep their natural position. Toggle with 'q'.
 final float GRID_SNAP_TOLERANCE_S = 0.030;
+
+// --- MIDI / ADSR output ------------------------------------------------------
+// Virtual MIDI port to send to (substring match). loopMIDI on Windows; on Mac
+// the IAC Driver, on Linux an ALSA virtual port. If no match is found the
+// sketch still runs, with MIDI disabled.
+final String MIDI_PORT_NAME = "loopMIDI Port";
+final int    MIDI_CHANNEL   = 0;     // 0-indexed; 0 = MIDI channel 1
+final int    BASE_CC        = 20;    // cluster i -> CC (BASE_CC + i)
+// Envelope length = max(transient duration, MIN_ENV_S). The floor guarantees
+// even very short transients produce a CC gesture the frame loop can resolve;
+// set to 0 for strict duration-only timing.
+final float  MIN_ENV_S      = 0.08;
+final boolean RELEASE_ON_PAUSE = false;  // true = send 0s on pause instead of holding
 
 SoundFile sound;
 Table eventsTable;
@@ -119,6 +148,21 @@ float stopAtTime = -1;
 String savedNotice       = "";
 int    savedNoticeUntil  = 0;
 
+// Per-cluster ADSR (fractions of the envelope length; sustainLevel is 0..1
+// amplitude). Sized to N_TRANSIENT_CLUSTERS in setup().
+float[] attackFrac, decayFrac, sustainLevel, releaseFrac;
+float[] ccVal;        // current envelope value per cluster, 0..1 (for meters)
+int[]   lastSent;     // last quantized CC value sent per cluster (-1 = none yet)
+
+// MIDI output (see MidiOut.java). midiOut.isOpen() false = port not found.
+MidiOut midiOut;
+boolean midiEnabled = true;
+
+// ADSR editor state.
+boolean editorOpen   = false;
+int     editorCluster = 0;
+int     dragHandle    = -1;   // 0=attack, 1=decay/sustain, 2=release
+
 class Event {
   float origT;          // detected onset time (ground truth, also what we save)
   float t, dur;         // t is the visual position — may be snapped to a grid tick
@@ -165,7 +209,7 @@ int indexOfBucket(String[] arr, String s) {
 
 void setup() {
   size(1920, 1080, P2D);
-  frameRate(60);
+  frameRate(120);
 
   TIMBRE = new String[N_TIMBRE_CLUSTERS];
   for (int i = 0; i < N_TIMBRE_CLUSTERS; i++) TIMBRE[i] = str(i);
@@ -207,6 +251,9 @@ void setup() {
   buildWaveformBuffer();
 
   sound.rate(playbackRate);
+
+  initAdsr();
+  initMidi();
 }
 
 void loadSegments() {
@@ -443,6 +490,9 @@ void draw() {
   }
 
   float now = sound.position();
+
+  updateMidi(now);  // emit per-cluster ADSR envelopes as MIDI CC
+
   int   currentPage = (int) (now / PAGE_DURATION_S);
   float pageStart   = currentPage * PAGE_DURATION_S;
   float pageEnd     = pageStart + PAGE_DURATION_S;
@@ -457,7 +507,10 @@ void draw() {
   drawMelody(pageStart, pageEnd, now);
   drawMetro(pageStart, pageEnd, now);
   drawWaveform(now, pageStart, pageEnd);
+  drawCcMeters();
   drawHUD(now, currentPage, pageEvents.size());
+
+  if (editorOpen) drawAdsrEditor();  // overlay drawn last, on top of everything
 }
 
 void drawGridWaveformBackground(float pageStart, float pageEnd) {
@@ -475,8 +528,11 @@ void drawGridWaveformBackground(float pageStart, float pageEnd) {
   for (int px = (int)gL; px <= (int)gR; px++) {
     float t0 = pageStart + (px - gL)       / pageW * pageDur;
     float t1 = pageStart + (px - gL + 1.0) / pageW * pageDur;
-    int i0 = max(0,     (int)(t0 / waveformWindowDur));
-    int i1 = min(n - 1, (int)(t1 / waveformWindowDur));
+    if (t0 >= trackDuration) break;  // final page extends past the track — stop here
+    // Clamp BOTH ends to the valid range; near the track end t0/t1 map past
+    // the last sample, and an unclamped i0 would read out of bounds.
+    int i0 = constrain((int)(t0 / waveformWindowDur), 0, n - 1);
+    int i1 = constrain((int)(t1 / waveformWindowDur), 0, n - 1);
     if (i1 < i0) i1 = i0;
     float p = 0;
     for (int i = i0; i <= i1; i++) p = max(p, wavePeaks[i]);
@@ -803,8 +859,15 @@ void drawHUD(float now, int page, int eventsThisPage) {
 
   textAlign(RIGHT, TOP);
   String snapHint = gridSnapEnabled ? "snap:on" : "snap:off";
-  text("space  play/pause     ← →  page seek     r  start     q  " + snapHint +
-       "     - / =  speed     ctrl/cmd+s  save", width - 24, 24);
+  text("space play/pause   ← → page   r start   q " + snapHint +
+       "   -/= speed   e editor   m midi   ctrl/cmd+s save", width - 24, 24);
+  boolean midiOk = (midiOut != null && midiOut.isOpen());
+  String midiStatus = midiOk
+    ? ("MIDI → " + midiOut.portName() + (midiEnabled ? "" : "  (muted)"))
+    : "MIDI: off (port not found)";
+  fill(midiOk && midiEnabled ? color(120, 220, 140) : color(210, 160, 80));
+  text(midiStatus, width - 24, 44);
+  fill(200);
 
   if (dragEventIdx >= 0) {
     Event e = events.get(dragEventIdx);
@@ -873,6 +936,7 @@ int rowAt(float my) {
 }
 
 void mousePressed() {
+  if (editorOpen) { editorMousePressed(); return; }
   int eventIdx = findEventNear(mouseX, mouseY);
   if (eventIdx < 0) return;
   if (mouseButton == LEFT) {
@@ -897,6 +961,7 @@ void mousePressed() {
 }
 
 void mouseDragged() {
+  if (editorOpen) { editorMouseDragged(); return; }
   if (dragEventIdx < 0) return;
   float deltaY = dragStartY - mouseY;  // drag up = positive
   int steps = (int) (deltaY / DRAG_PIXELS_PER_STEP);
@@ -906,11 +971,13 @@ void mouseDragged() {
 }
 
 void mouseReleased() {
+  if (editorOpen) { dragHandle = -1; return; }
   dragEventIdx = -1;
   dragRow      = -1;
 }
 
 void mouseMoved() {
+  if (editorOpen) return;  // suspend hover while the editor overlay is up
   hoverEventIdx = findEventNear(mouseX, mouseY);
 }
 
@@ -920,7 +987,8 @@ void keyPressed() {
   // ctrl/cmd + s — save
   if ((keyEvent.isControlDown() || keyEvent.isMetaDown())
       && (key == 's' || key == 'S' || key == '')) {
-    saveEdits();
+    if (editorOpen) saveAdsr();
+    else            saveEdits();
     return;
   }
   if (key == ' ') {
@@ -950,12 +1018,23 @@ void keyPressed() {
     playbackRate = min(2.0, playbackRate + 0.25);
     sound.rate(playbackRate);
   }
-  // Digit keys — reassign transient_cluster on the hovered event.
-  if (hoverEventIdx >= 0 && key >= '0' && key <= '9') {
+  if (key == 'e' || key == 'E') {
+    editorOpen = !editorOpen;
+  }
+  if (key == 'm' || key == 'M') {
+    midiEnabled = !midiEnabled;  // updateMidi() sends 0s on the next frame when off
+  }
+  // Digit keys: in the editor, select the cluster to edit; otherwise reassign
+  // the hovered event's transient_cluster.
+  if (key >= '0' && key <= '9') {
     int digit = key - '0';
-    int clusterRow = csvCols.length - 1;
-    if (digit < rowValues[clusterRow].length) {
-      events.get(hoverEventIdx).bucketIdx[clusterRow] = digit;
+    if (editorOpen) {
+      if (digit < N_TRANSIENT_CLUSTERS) editorCluster = digit;
+    } else if (hoverEventIdx >= 0) {
+      int clusterRow = csvCols.length - 1;
+      if (digit < rowValues[clusterRow].length) {
+        events.get(hoverEventIdx).bucketIdx[clusterRow] = digit;
+      }
     }
   }
 }
@@ -1022,4 +1101,275 @@ int findNextVersion(String baseStem) {
     }
   }
   return maxV + 1;
+}
+
+// --- ADSR model + persistence ------------------------------------------------
+
+void initAdsr() {
+  int n = N_TRANSIENT_CLUSTERS;
+  attackFrac   = new float[n];
+  decayFrac    = new float[n];
+  sustainLevel = new float[n];
+  releaseFrac  = new float[n];
+  ccVal        = new float[n];
+  lastSent     = new int[n];
+  for (int i = 0; i < n; i++) {
+    // Defaults vary by cluster index so clusters start audibly distinct;
+    // the user tunes them in the editor. All are fractions of envelope length
+    // except sustainLevel (0..1 amplitude).
+    attackFrac[i]   = 0.04 + 0.04 * (i % 3);
+    decayFrac[i]    = 0.18;
+    sustainLevel[i] = 0.65 - 0.10 * (i % 3);
+    releaseFrac[i]  = 0.25 + 0.05 * (i % 3);
+    clampAdsr(i);
+    ccVal[i]    = 0;
+    lastSent[i] = -1;     // force a send on the first frame
+  }
+  loadAdsr();
+}
+
+void clampAdsr(int c) {
+  attackFrac[c]   = constrain(attackFrac[c], 0, 1);
+  decayFrac[c]    = constrain(decayFrac[c], 0, 1 - attackFrac[c]);
+  releaseFrac[c]  = constrain(releaseFrac[c], 0, 1 - attackFrac[c] - decayFrac[c]);
+  sustainLevel[c] = constrain(sustainLevel[c], 0, 1);
+}
+
+String adsrFileName() {
+  return CSV_FILE.replaceAll("\\.csv$", "") + "_adsr.csv";
+}
+
+void loadAdsr() {
+  File f = new File(dataPath(adsrFileName()));
+  if (!f.exists()) return;  // optional — defaults stand otherwise
+  Table t = loadTable(adsrFileName(), "header");
+  for (TableRow r : t.rows()) {
+    int c = r.getInt("cluster");
+    if (c < 0 || c >= N_TRANSIENT_CLUSTERS) continue;
+    attackFrac[c]   = r.getFloat("attack");
+    decayFrac[c]    = r.getFloat("decay");
+    sustainLevel[c] = r.getFloat("sustain");
+    releaseFrac[c]  = r.getFloat("release");
+    clampAdsr(c);
+  }
+}
+
+void saveAdsr() {
+  Table out = new Table();
+  out.addColumn("cluster");
+  out.addColumn("attack");
+  out.addColumn("decay");
+  out.addColumn("sustain");
+  out.addColumn("release");
+  for (int c = 0; c < N_TRANSIENT_CLUSTERS; c++) {
+    TableRow row = out.addRow();
+    row.setInt("cluster", c);
+    row.setFloat("attack",  attackFrac[c]);
+    row.setFloat("decay",   decayFrac[c]);
+    row.setFloat("sustain", sustainLevel[c]);
+    row.setFloat("release", releaseFrac[c]);
+  }
+  saveTable(out, dataPath(adsrFileName()));
+  savedNotice      = "saved " + adsrFileName();
+  savedNoticeUntil = millis() + 4000;
+  println(savedNotice);
+}
+
+// Envelope value at normalized phase p in [0,1). Returns 0 outside that range.
+float envValue(int c, float p) {
+  if (p < 0 || p >= 1) return 0;
+  float aF = attackFrac[c], dF = decayFrac[c], rF = releaseFrac[c], S = sustainLevel[c];
+  float relStart = 1 - rF;
+  if (p < aF)            return aF > 0 ? p / aF : 1;                       // attack 0->1
+  else if (p < aF + dF)  return dF > 0 ? 1 - (1 - S) * (p - aF) / dF : S;  // decay 1->S
+  else if (p < relStart) return S;                                        // sustain
+  else                   return rF > 0 ? S * (1 - (p - relStart) / rF) : 0; // release S->0
+}
+
+// --- MIDI output (javax.sound.midi) ------------------------------------------
+
+void initMidi() {
+  midiOut = new MidiOut(MIDI_PORT_NAME);
+}
+
+void sendCC(int cc, int val) {
+  if (midiOut != null) midiOut.sendCC(MIDI_CHANNEL, cc, val);
+}
+
+void closeMidi() {
+  if (midiOut != null) { midiOut.close(); midiOut = null; }
+}
+
+void dispose() {
+  if (midiOut != null && midiOut.isOpen()) {
+    for (int c = 0; c < N_TRANSIENT_CLUSTERS; c++) sendCC(BASE_CC + c, 0);  // release all
+  }
+  closeMidi();
+  super.dispose();
+}
+
+// Stateless per-frame envelope -> CC send. Computing purely from `now` means
+// pause (now frozen -> values hold), seek, and playback-rate changes are all
+// handled automatically. Polyphony of overlapping same-cluster transients is
+// resolved by taking the max envelope value. Dedup: only send on change.
+void updateMidi(float now) {
+  int nc = N_TRANSIENT_CLUSTERS;
+  for (int c = 0; c < nc; c++) ccVal[c] = 0;
+
+  boolean releasing = RELEASE_ON_PAUSE && !sound.isPlaying();
+  if (!releasing) {
+    int clusterRow = csvCols.length - 1;
+    for (Event e : events) {
+      if (e.disabled) continue;
+      float envLen = max(e.dur, MIN_ENV_S);
+      float p = (now - e.origT) / envLen;
+      if (p < 0 || p >= 1) continue;
+      int c = e.bucketIdx[clusterRow];
+      if (c < 0 || c >= nc) continue;
+      float v = envValue(c, p);
+      if (v > ccVal[c]) ccVal[c] = v;
+    }
+  }
+
+  for (int c = 0; c < nc; c++) {
+    int q = midiEnabled ? constrain(round(ccVal[c] * 127), 0, 127) : 0;
+    if (q != lastSent[c]) {
+      sendCC(BASE_CC + c, q);
+      lastSent[c] = q;
+    }
+  }
+}
+
+// --- CC level meters (always visible) ----------------------------------------
+
+void drawCcMeters() {
+  int nc = N_TRANSIENT_CLUSTERS;
+  float stripTop = height - 40, stripH = 30;
+  float x0 = 40, totalW = width - 80, gap = 10;
+  float barW = (totalW - gap * (nc - 1)) / nc;
+  textSize(12);
+  for (int c = 0; c < nc; c++) {
+    float bx = x0 + c * (barW + gap);
+    color col = palettes[4][c];
+    float v = constrain(ccVal[c], 0, 1);
+    noStroke();
+    fill(20);
+    rect(bx, stripTop, barW, stripH);              // background
+    fill(red(col), green(col), blue(col), midiEnabled ? 220 : 80);
+    rect(bx, stripTop, barW * v, stripH);          // level fill (left -> right)
+    noFill();
+    stroke(60);
+    strokeWeight(1);
+    rect(bx, stripTop, barW, stripH);              // frame
+    int q = constrain(round(v * 127), 0, 127);
+    fill(235);
+    textAlign(LEFT, CENTER);
+    text("c" + c + "  CC" + (BASE_CC + c) + ": " + q, bx + 6, stripTop + stripH / 2);
+  }
+  noStroke();
+}
+
+// --- ADSR editor overlay -----------------------------------------------------
+
+float editPlotL() { return 220; }
+float editPlotR() { return width - 220; }
+float editPlotT() { return 200; }
+float editPlotB() { return 560; }
+
+float plotX(float frac) { return editPlotL() + constrain(frac, 0, 1) * (editPlotR() - editPlotL()); }
+float plotY(float val)  { return editPlotB() - constrain(val, 0, 1) * (editPlotB() - editPlotT()); }
+
+void drawEnvCurve(int c, color col, float weight, int alpha) {
+  stroke(red(col), green(col), blue(col), alpha);
+  strokeWeight(weight);
+  noFill();
+  beginShape();
+  for (int i = 0; i <= 200; i++) {
+    float p = (i / 200.0) * 0.99999;  // stay just inside [0,1) so release shows
+    vertex(plotX(p), plotY(envValue(c, p)));
+  }
+  endShape();
+}
+
+void drawHandle(float x, float y) {
+  noStroke();
+  fill(255, 240, 120);
+  ellipse(x, y, 14, 14);
+  fill(40);
+  ellipse(x, y, 6, 6);
+}
+
+void drawAdsrEditor() {
+  noStroke();
+  fill(0, 0, 0, 195);
+  rect(0, 0, width, height);
+
+  float pL = editPlotL(), pR = editPlotR(), pT = editPlotT(), pB = editPlotB();
+
+  fill(230);
+  textAlign(LEFT, TOP);
+  textSize(20);
+  text("ADSR editor — cluster " + editorCluster + " / " + (N_TRANSIENT_CLUSTERS - 1), pL, pT - 44);
+  fill(170);
+  textSize(13);
+  textAlign(RIGHT, TOP);
+  text("0-9 select cluster    drag handles    ctrl/cmd+s save    e close", pR, pT - 38);
+
+  stroke(80);
+  strokeWeight(1);
+  noFill();
+  rect(pL, pT, pR - pL, pB - pT);
+
+  // Ghost curves for other clusters, then the selected one bold.
+  for (int c = 0; c < N_TRANSIENT_CLUSTERS; c++) {
+    if (c != editorCluster) drawEnvCurve(c, palettes[4][c], 1, 55);
+  }
+  color col = palettes[4][editorCluster];
+  drawEnvCurve(editorCluster, col, 3, 255);
+
+  float aF = attackFrac[editorCluster], dF = decayFrac[editorCluster];
+  float rF = releaseFrac[editorCluster], S = sustainLevel[editorCluster];
+  drawHandle(plotX(aF),      plotY(1));   // attack peak
+  drawHandle(plotX(aF + dF), plotY(S));   // decay/sustain
+  drawHandle(plotX(1 - rF),  plotY(S));   // release start
+
+  fill(220);
+  textAlign(LEFT, TOP);
+  textSize(15);
+  text("A " + nf(aF, 1, 2) + "    D " + nf(dF, 1, 2) +
+       "    S " + nf(S, 1, 2) + "    R " + nf(rF, 1, 2) +
+       "    (sustain span " + nf(max(0, 1 - aF - dF - rF), 1, 2) + ")", pL, pB + 16);
+  int q = constrain(round(ccVal[editorCluster] * 127), 0, 127);
+  text("CC " + (BASE_CC + editorCluster) + " = " + q +
+       (midiEnabled ? "" : "   (MIDI muted)"), pL, pB + 40);
+
+  noStroke();
+}
+
+void editorMousePressed() {
+  int c = editorCluster;
+  float[] hx = { plotX(attackFrac[c]), plotX(attackFrac[c] + decayFrac[c]), plotX(1 - releaseFrac[c]) };
+  float[] hy = { plotY(1),             plotY(sustainLevel[c]),             plotY(sustainLevel[c]) };
+  dragHandle = -1;
+  float best = 16;  // pick radius in px
+  for (int h = 0; h < 3; h++) {
+    float d = dist(mouseX, mouseY, hx[h], hy[h]);
+    if (d < best) { best = d; dragHandle = h; }
+  }
+}
+
+void editorMouseDragged() {
+  if (dragHandle < 0) return;
+  int c = editorCluster;
+  float frac = constrain((mouseX - editPlotL()) / (editPlotR() - editPlotL()), 0, 1);
+  float val  = constrain((editPlotB() - mouseY) / (editPlotB() - editPlotT()), 0, 1);
+  if (dragHandle == 0) {            // attack peak: x -> attack
+    attackFrac[c] = frac;
+  } else if (dragHandle == 1) {     // decay/sustain: x -> decay end, y -> sustain
+    decayFrac[c]    = frac - attackFrac[c];
+    sustainLevel[c] = val;
+  } else {                          // release start: x -> release
+    releaseFrac[c] = 1 - frac;
+  }
+  clampAdsr(c);
 }
