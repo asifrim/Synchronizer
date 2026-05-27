@@ -41,7 +41,8 @@ def test_pipeline(tmp_path: Path) -> None:
     assert text.startswith("index,start_time,duration,")
     header = text.splitlines()[0]
     assert "timbre_cluster" in header
-    assert header.endswith("transient_cluster")
+    assert "transient_cluster" in header
+    assert header.endswith("transient_cluster_k8")
     assert chosen_k >= 1
     assert -1.0 <= silhouette <= 1.0
     assert text.count("\n") == len(out) + 1  # header + rows

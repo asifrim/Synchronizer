@@ -38,14 +38,14 @@ void updateMidi(float now) {
       float p = (now - e.origT) / envLen;
       if (p < 0 || p >= 1) continue;
       int c = e.bucketIdx[clusterRow];
-      if (c < 0 || c >= nc) continue;
+      if (c < 0 || c >= nc || c >= activeK) continue;
       float v = envValue(c, p);
       if (v > ccVal[c]) ccVal[c] = v;
     }
   }
 
   for (int c = 0; c < nc; c++) {
-    int q = midiEnabled ? constrain(round(ccVal[c] * 127), 0, 127) : 0;
+    int q = (midiEnabled && c < activeK) ? constrain(round(ccVal[c] * 127), 0, 127) : 0;
     if (q != lastSent[c]) {
       sendCC(BASE_CC + c, q);
       lastSent[c] = q;

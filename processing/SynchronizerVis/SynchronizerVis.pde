@@ -86,7 +86,9 @@ final String STEM_OTHER_FILE  = "04_Krib_other.wav";
 // --- Analysis / display config -----------------------------------------------
 
 final int   N_TIMBRE_CLUSTERS    = 6;
-final int   N_TRANSIENT_CLUSTERS = 2;
+final int   N_TRANSIENT_CLUSTERS = 8;  // always 8 panels; activeK controls how many are live
+final int   MULTI_K_MIN          = 2;
+final int   MULTI_K_MAX_FIXED    = 8;
 final int   N_SEGMENT_LABELS     = 4;
 final int[] DIVISIONS            = {4, 8, 16, 32};  // metronome note values
 final float PAGE_DURATION_S      = 4.0;
@@ -182,6 +184,9 @@ int sliderDragCluster = -1;  // -1 = not dragging
 int sliderDragParam   = -1;  // 0=A 1=D 2=S 3=R
 float[] eventNormRms;        // quantile-normalised RMS per event (indexed by rowIndex)
 
+int     activeK    = 2;      // which k is active for display/MIDI (MULTI_K_MIN..MULTI_K_MAX_FIXED)
+int[][] kClusters;           // kClusters[k-MULTI_K_MIN][eventIdx]
+
 // --- Data classes ------------------------------------------------------------
 
 class Event {
@@ -245,12 +250,11 @@ void setup() {
   int idx = 0;
   for (TableRow r : eventsTable.rows()) {
     int[] bi = new int[rowValues.length];
-    for (int i = 0; i < rowValues.length; i++)
-      bi[i] = indexOfBucket(rowValues[i], r.getString(csvCols[i]));
     events.add(new Event(idx, r.getFloat("start_time"), r.getFloat("duration"),
                          r.getFloat("energy"), bi));
     idx++;
   }
+  loadKClusters();       // populates kClusters and sets bucketIdx[0] from activeK
   buildQuantileNorms();
 
   waveformTable = loadTable(WAVE_FILE, "header");

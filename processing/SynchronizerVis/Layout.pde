@@ -50,22 +50,25 @@ float rowCenterY(int row) {
 }
 
 // --- Right-panel cluster layout ----------------------------------------------
-// Each cluster gets an equal vertical slice of the full panel height.
+// Always 8 cluster panels; the k-selector strip sits at the very top.
+// Each cluster gets a compact equal slice (≈127 px at 1080px height).
 //
-// Within each cluster section the layout (relative to panelClusterY(c)) is:
-//   32  .. 162   envelope curve (130 px)
-//   174 .. 349   sliders A/D/S/R (centre Y at 174, 218, 262, 306)
-//   362 .. 395   LIN/EXP shape toggle row
-//   412 .. 441   CC level meter
+// Within each cluster section (relative to panelClusterY(c)):
+//   2  .. 18    header label strip
+//   20 .. 58    envelope curve (38 px)
+//   62 .. 98    sliders A/D/S/R (centre Y at 62, 74, 86, 98)
+//   112         CC level meter centre
+//
+// LIN/EXP shape toggles are omitted — no room in compact mode.
 
+float panelKSelectorY()       { return 28; }  // centre Y of the k-selector button row
 float panelClusterH()         { return (height - 60) / (float)N_TRANSIENT_CLUSTERS; }
 float panelClusterY(int c)    { return 40 + c * panelClusterH(); }
 
-float panelCurveT(int c)      { return panelClusterY(c) + 32; }
-float panelCurveB(int c)      { return panelCurveT(c) + 130; }
-float panelSliderY(int c, int p) { return panelClusterY(c) + 174 + p * 44; }
-float panelToggleY(int c)     { return panelClusterY(c) + 174 + 4 * 44 + 18; }
-float panelMeterY(int c)      { return panelClusterY(c) + 174 + 4 * 44 + 60; }
+float panelCurveT(int c)      { return panelClusterY(c) + 20; }
+float panelCurveB(int c)      { return panelCurveT(c) + 38; }
+float panelSliderY(int c, int p) { return panelClusterY(c) + 62 + p * 12; }
+float panelMeterY(int c)      { return panelClusterY(c) + 112; }
 
 // --- ADSR slider track -------------------------------------------------------
 // Shared geometry for all four sliders in a cluster section.

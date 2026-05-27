@@ -23,7 +23,7 @@ If either is missing, stop and tell the user. Suggest running `/analyze-track <a
 
 ### 3. Detect cluster counts from the events CSV
 Read `processing/SynchronizerVis/data/<stem>.csv` and compute:
-- `N_TRANSIENT_CLUSTERS` = max value in the `transient_cluster` column + 1
+- `N_TRANSIENT_CLUSTERS` = always **8** (the sketch always shows 8 ADSR panels; `activeK` controls how many are live)
 - `N_TIMBRE_CLUSTERS` = max value in the `timbre_cluster` column + 1
 
 Use Python for this (no venv needed — stdlib csv module only):
@@ -31,9 +31,8 @@ Use Python for this (no venv needed — stdlib csv module only):
 python -c "
 import csv
 rows = list(csv.DictReader(open('processing/SynchronizerVis/data/<stem>.csv')))
-tc = max(int(r['transient_cluster']) for r in rows if r.get('transient_cluster','').strip()) + 1
 ti = max(int(r['timbre_cluster']) for r in rows if r.get('timbre_cluster','').strip()) + 1
-print(tc, ti)
+print(ti)
 "
 ```
 
@@ -67,8 +66,8 @@ final String STEM_OTHER_FILE  = "<stem>_other.wav";
 And in the "Analysis / display config" block:
 ```processing
 final int   N_TIMBRE_CLUSTERS    = <detected>;
-final int   N_TRANSIENT_CLUSTERS = <detected>;
 ```
+`N_TRANSIENT_CLUSTERS` is always 8 — do not change it.
 
 Use targeted Edit calls that match the old strings exactly. Do not change any other lines.
 

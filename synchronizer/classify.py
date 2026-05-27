@@ -13,6 +13,8 @@ from .features import TransientFeatures
 PITCH_CONFIDENCE_FLOOR = 0.5
 DEFAULT_N_TIMBRE_CLUSTERS = 6
 DEFAULT_CLUSTER_K_MAX = 16
+MULTI_K_MIN = 2
+MULTI_K_MAX_FIXED = 8   # always computed regardless of silhouette sweep
 
 
 @dataclass
@@ -23,7 +25,14 @@ class ClassifiedTransient:
     energy_bucket: str         # soft / medium / loud
     duration_bucket: str       # short / medium / long
     timbre_cluster: int        # k-means cluster id, ordered by ascending mean centroid_hz
-    transient_cluster: int     # holistic cluster across all features, k chosen by silhouette
+    transient_cluster: int     # holistic cluster, k chosen by silhouette score
+    transient_cluster_k2: int  # holistic cluster fixed at k=2
+    transient_cluster_k3: int
+    transient_cluster_k4: int
+    transient_cluster_k5: int
+    transient_cluster_k6: int
+    transient_cluster_k7: int
+    transient_cluster_k8: int
 
 
 def _tercile_bucket(value: float, values: np.ndarray, labels: tuple[str, str, str]) -> str:
@@ -85,43 +94,61 @@ def _build_feature_matrix(transients: list[TransientFeatures]) -> np.ndarray:
     return X
 
 
-def _holistic_clusters(
-    transients: list[TransientFeatures],
-    k_max: int,
-) -> tuple[np.ndarray, int, float]:
-    """Sweep k=2..k_max, pick the clustering with the highest silhouette score.
-
-    Cluster IDs are remapped by ascending mean spectral centroid so that
-    cluster 0 = darkest/lowest-energy group and the ordering is stable across
-    runs.  Returns (labels, chosen_k, best_silhouette).
-    """
-    n = len(transients)
-    if n < 4:
-        return np.zeros(n, dtype=int), 1, 0.0
-
-    X = _build_feature_matrix(transients)
-    k_hi = min(k_max, n - 1)
-
-    best_labels: np.ndarray = np.zeros(n, dtype=int)
-    best_k = 2
-    best_score = -1.0
-
-    for k in range(2, k_hi + 1):
-        km = KMeans(n_clusters=k, n_init=10, random_state=0)
-        labels = km.fit_predict(X)
-        score = float(silhouette_score(X, labels, sample_size=min(n, 2000), random_state=0))
-        if score > best_score:
-            best_score, best_k, best_labels = score, k, labels.copy()
-
-    # Remap IDs by ascending mean centroid_hz for deterministic, ordered labels.
-    centroids = np.array([t.centroid_hz for t in transients])
+def _remap_by_centroid(
+    labels: np.ndarray, k: int, centroids: np.ndarray
+) -> np.ndarray:
+    """Remap cluster IDs so cluster 0 has the lowest mean spectral centroid."""
     cluster_brightness = np.array([
-        centroids[best_labels == c].mean() if np.any(best_labels == c) else np.inf
-        for c in range(best_k)
+        centroids[labels == c].mean() if np.any(labels == c) else np.inf
+        for c in range(k)
     ])
     order = np.argsort(cluster_brightness)
     remap = {int(old): new for new, old in enumerate(order)}
-    return np.array([remap[int(c)] for c in best_labels], dtype=int), best_k, best_score
+    return np.array([remap[int(c)] for c in labels], dtype=int)
+
+
+def _holistic_clusters(
+    transients: list[TransientFeatures],
+    k_max: int,
+) -> tuple[np.ndarray, int, float, dict[int, np.ndarray]]:
+    """Sweep k=2..max(k_max, MULTI_K_MAX_FIXED), pick the best by silhouette.
+
+    Also caches remapped labels for every k in MULTI_K_MIN..MULTI_K_MAX_FIXED.
+    Returns (best_labels, chosen_k, best_silhouette, multi_k_labels) where
+    multi_k_labels maps k -> remapped labels array.
+    """
+    n = len(transients)
+    multi_k: dict[int, np.ndarray] = {
+        k: np.zeros(n, dtype=int) for k in range(MULTI_K_MIN, MULTI_K_MAX_FIXED + 1)
+    }
+    if n < 4:
+        return np.zeros(n, dtype=int), 1, 0.0, multi_k
+
+    X = _build_feature_matrix(transients)
+    centroids = np.array([t.centroid_hz for t in transients])
+    # Always compute at least MULTI_K_MAX_FIXED so every panel has data.
+    effective_k_hi = min(max(k_max, MULTI_K_MAX_FIXED), n - 1)
+
+    best_labels: np.ndarray = np.zeros(n, dtype=int)
+    best_k = MULTI_K_MIN
+    best_score = -1.0
+
+    for k in range(MULTI_K_MIN, effective_k_hi + 1):
+        km = KMeans(n_clusters=k, n_init=10, random_state=0)
+        raw = km.fit_predict(X)
+        remapped = _remap_by_centroid(raw, k, centroids)
+
+        if MULTI_K_MIN <= k <= MULTI_K_MAX_FIXED:
+            multi_k[k] = remapped
+
+        if k <= k_max:
+            score = float(
+                silhouette_score(X, raw, sample_size=min(n, 2000), random_state=0)
+            )
+            if score > best_score:
+                best_score, best_k, best_labels = score, k, remapped.copy()
+
+    return best_labels, best_k, best_score, multi_k
 
 
 def classify(
@@ -141,7 +168,7 @@ def classify(
     ])
 
     clusters = _timbre_clusters(transients, n_timbre_clusters)
-    holistic, chosen_k, silhouette = _holistic_clusters(transients, cluster_k_max)
+    holistic, chosen_k, silhouette, multi_k = _holistic_clusters(transients, cluster_k_max)
 
     out = []
     for i, t in enumerate(transients):
@@ -159,6 +186,13 @@ def classify(
                 duration_bucket=_tercile_bucket(t.duration, durations, ("short", "medium", "long")),
                 timbre_cluster=int(clusters[i]),
                 transient_cluster=int(holistic[i]),
+                transient_cluster_k2=int(multi_k[2][i]),
+                transient_cluster_k3=int(multi_k[3][i]),
+                transient_cluster_k4=int(multi_k[4][i]),
+                transient_cluster_k5=int(multi_k[5][i]),
+                transient_cluster_k6=int(multi_k[6][i]),
+                transient_cluster_k7=int(multi_k[7][i]),
+                transient_cluster_k8=int(multi_k[8][i]),
             )
         )
     return out, chosen_k, silhouette

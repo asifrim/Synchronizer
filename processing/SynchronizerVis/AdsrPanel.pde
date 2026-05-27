@@ -117,6 +117,30 @@ float envValue(int c, float p) {
 
 // --- Right-panel drawing -----------------------------------------------------
 
+void drawKSelector() {
+  float pL   = panelLeft();
+  float pW   = panelW();
+  float ky   = panelKSelectorY();
+  int   nk   = MULTI_K_MAX_FIXED - MULTI_K_MIN + 1;
+  float btnW = (pW - 20.0) / nk;
+
+  for (int k = MULTI_K_MIN; k <= MULTI_K_MAX_FIXED; k++) {
+    float x      = pL + 10 + (k - MULTI_K_MIN) * btnW;
+    boolean act  = (k == activeK);
+    noStroke();
+    if (act) {
+      color col = palettes[0][constrain(k - MULTI_K_MIN, 0, N_TRANSIENT_CLUSTERS - 1)];
+      fill(red(col) * 0.45, green(col) * 0.45, blue(col) * 0.45);
+    } else {
+      fill(30);
+    }
+    rect(x, ky - 9, btnW - 3, 18, 3);
+    textAlign(CENTER, CENTER); textSize(11);
+    fill(act ? color(230) : color(75));
+    text(str(k), x + (btnW - 3) * 0.5, ky);
+  }
+}
+
 void drawAdsrPanel(float now) {
   float pL = panelLeft();
   float pW = panelW();
@@ -127,39 +151,47 @@ void drawAdsrPanel(float now) {
   line(pL, 0, pL, height);
   noStroke();
 
-  fill(100); textAlign(LEFT, TOP); textSize(11);
-  text("ADSR  ENVELOPES", pL + 8, 8);
+  fill(80); textAlign(LEFT, TOP); textSize(10);
+  text("k =", pL + 8, 8);
+  drawKSelector();
 
   for (int c = 0; c < N_TRANSIENT_CLUSTERS; c++) {
     drawPanelCluster(c, now);
     if (c < N_TRANSIENT_CLUSTERS - 1) {
-      stroke(38); strokeWeight(1);
-      line(pL + 6, panelClusterY(c + 1) - 4, pL + pW - 6, panelClusterY(c + 1) - 4);
+      stroke(30); strokeWeight(1);
+      line(pL + 6, panelClusterY(c + 1) - 3, pL + pW - 6, panelClusterY(c + 1) - 3);
       noStroke();
     }
   }
 }
 
 void drawPanelCluster(int c, float now) {
+  boolean inactive = (c >= activeK);
   float pL  = panelLeft();
   float cy  = panelClusterY(c);
-  color col = palettes[0][c];
+  color col = inactive ? color(45) : palettes[0][c];
 
   // Cluster header strip.
   noStroke();
-  fill(red(col) * 0.22, green(col) * 0.22, blue(col) * 0.22);
-  rect(pL + 4, cy + 4, panelW() - 8, 24, 4);
-  fill(red(col), green(col), blue(col));
-  textAlign(LEFT, CENTER); textSize(13);
-  text("cluster " + c + "    CC " + (BASE_CC + c), pL + 12, cy + 16);
+  fill(inactive ? 20 : red(col) * 0.20, inactive ? 20 : green(col) * 0.20, inactive ? 20 : blue(col) * 0.20);
+  rect(pL + 4, cy + 2, panelW() - 8, 17, 3);
+  fill(inactive ? 55 : col);
+  textAlign(LEFT, CENTER); textSize(10);
+  text("cluster " + c + "  CC " + (BASE_CC + c), pL + 10, cy + 10);
 
   drawPanelEnvCurve(c, now);
   drawPanelSlider(c, 0, "A", attackFrac[c]);
   drawPanelSlider(c, 1, "D", decayFrac[c]);
   drawPanelSlider(c, 2, "S", sustainLevel[c]);
   drawPanelSlider(c, 3, "R", releaseFrac[c]);
-  drawShapeToggles(c);
   drawPanelMeter(c);
+
+  // Grey-out overlay for clusters outside the active k range.
+  if (inactive) {
+    noStroke();
+    fill(14, 16, 24, 170);
+    rect(pL + 2, cy + 1, panelW() - 4, panelClusterH() - 2, 2);
+  }
 }
 
 void drawPanelEnvCurve(int c, float now) {
@@ -265,37 +297,6 @@ void drawPanelSlider(int c, int param, String label, float value) {
   ellipse(hX, trackY, hR * 0.8, hR * 0.8);
 }
 
-void drawShapeToggles(int c) {
-  float pL = panelLeft();
-  float ty = panelToggleY(c);
-  float bW = 40, bH = 20;
-
-  fill(130); textSize(11); textAlign(RIGHT, CENTER);
-  text("A", pL + 24, ty);
-  drawToggleBtn(pL + 26,  ty, bW, bH, !attackExp[c], "LIN", palettes[0][c]);
-  drawToggleBtn(pL + 68,  ty, bW, bH,  attackExp[c], "EXP", palettes[0][c]);
-
-  fill(130); textAlign(RIGHT, CENTER);
-  text("D", pL + 148, ty);
-  drawToggleBtn(pL + 150, ty, bW, bH, !decayExp[c], "LIN", palettes[0][c]);
-  drawToggleBtn(pL + 192, ty, bW, bH,  decayExp[c], "EXP", palettes[0][c]);
-}
-
-void drawToggleBtn(float x, float y, float bW, float bH, boolean active, String label, color col) {
-  float bHH = bH * 0.5;
-  if (active) {
-    noStroke();
-    fill(red(col) * 0.55, green(col) * 0.55, blue(col) * 0.55);
-    rect(x, y - bHH, bW, bH, 3);
-    fill(red(col), green(col), blue(col));
-  } else {
-    noFill(); stroke(50); strokeWeight(1);
-    rect(x, y - bHH, bW, bH, 3);
-    fill(90); noStroke();
-  }
-  textAlign(CENTER, CENTER); textSize(10);
-  text(label, x + bW * 0.5, y);
-}
 
 void drawPanelMeter(int c) {
   float pL  = panelLeft();
@@ -324,25 +325,30 @@ void drawPanelMeter(int c) {
 
 void panelMousePressed() {
   float mx = mouseX, my = mouseY;
+
+  // K-selector: hit zone ±10px from strip centre Y.
+  float ky = panelKSelectorY();
+  if (abs(my - ky) <= 10) {
+    float pL   = panelLeft();
+    float pW   = panelW();
+    int   nk   = MULTI_K_MAX_FIXED - MULTI_K_MIN + 1;
+    float btnW = (pW - 20.0) / nk;
+    for (int k = MULTI_K_MIN; k <= MULTI_K_MAX_FIXED; k++) {
+      float x = pL + 10 + (k - MULTI_K_MIN) * btnW;
+      if (mx >= x && mx < x + btnW - 3) { switchK(k); return; }
+    }
+  }
+
+  // Sliders: hit zone ±8px from centre Y.
   for (int c = 0; c < N_TRANSIENT_CLUSTERS; c++) {
-    // Sliders: hit zone ±12 px from centre Y, spanning the full track width.
     for (int p = 0; p < 4; p++) {
       float sy = panelSliderY(c, p);
-      if (abs(my - sy) <= 12 && mx >= slTrackL() - 10 && mx <= slTrackR() + 10) {
+      if (abs(my - sy) <= 8 && mx >= slTrackL() - 10 && mx <= slTrackR() + 10) {
         sliderDragCluster = c;
         sliderDragParam   = p;
         applySliderDrag(c, p, mx);
         return;
       }
-    }
-    // Shape toggle buttons (hit zone ±10 px from toggle row Y).
-    float ty = panelToggleY(c);
-    float pL = panelLeft();
-    if (abs(my - ty) <= 10) {
-      if      (mx >= pL + 26  && mx <= pL + 66)  { attackExp[c] = false; saveAdsr(); return; }
-      else if (mx >= pL + 68  && mx <= pL + 108) { attackExp[c] = true;  saveAdsr(); return; }
-      else if (mx >= pL + 150 && mx <= pL + 190) { decayExp[c]  = false; saveAdsr(); return; }
-      else if (mx >= pL + 192 && mx <= pL + 232) { decayExp[c]  = true;  saveAdsr(); return; }
     }
   }
 }

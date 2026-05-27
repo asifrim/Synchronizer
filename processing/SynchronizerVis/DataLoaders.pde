@@ -164,6 +164,41 @@ int currentSegmentIndex(float now) {
   return -1;
 }
 
+void loadKClusters() {
+  int n  = events.size();
+  int nk = MULTI_K_MAX_FIXED - MULTI_K_MIN + 1;
+  kClusters = new int[nk][n];
+
+  // Detect whether the new multi-k columns are present in the CSV.
+  boolean hasMultiK = false;
+  for (int c = 0; c < eventsTable.getColumnCount(); c++) {
+    if (eventsTable.getColumnTitle(c).equals("transient_cluster_k2")) { hasMultiK = true; break; }
+  }
+
+  for (int k = MULTI_K_MIN; k <= MULTI_K_MAX_FIXED; k++) {
+    String col = hasMultiK ? ("transient_cluster_k" + k) : "transient_cluster";
+    boolean colExists = false;
+    for (int c = 0; c < eventsTable.getColumnCount(); c++) {
+      if (eventsTable.getColumnTitle(c).equals(col)) { colExists = true; break; }
+    }
+    for (int i = 0; i < n; i++) {
+      kClusters[k - MULTI_K_MIN][i] = colExists ? eventsTable.getRow(events.get(i).rowIndex).getInt(col) : 0;
+    }
+  }
+
+  // Initialise bucketIdx[0] from the starting activeK.
+  for (int i = 0; i < n; i++)
+    events.get(i).bucketIdx[0] = kClusters[activeK - MULTI_K_MIN][i];
+}
+
+void switchK(int newK) {
+  if (newK < MULTI_K_MIN || newK > MULTI_K_MAX_FIXED) return;
+  activeK = newK;
+  for (int i = 0; i < events.size(); i++)
+    events.get(i).bucketIdx[0] = kClusters[newK - MULTI_K_MIN][i];
+  buildQuantileNorms();
+}
+
 void buildPalettes() {
   palettes = new color[rowValues.length][];
   palettes[0] = new color[N_TRANSIENT_CLUSTERS];
