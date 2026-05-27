@@ -6,17 +6,21 @@ int findEventNear(float mx, float my) {
   float now = sound.position();
   float pageStart = pageStartFor(now);
   float pageEnd   = pageStart + PAGE_DURATION_S;
-  float cs  = cellSize();
-  float maxDx = cs / 2 + 6;
+  float gL = gridLeft(), gR = gridRight();
 
-  if (mx < gridLeft() - maxDx || mx > gridRight() + maxDx) return -1;
+  if (mx < gL || mx > gR) return -1;
   if (my < gridTop() || my > gridBottom()) return -1;
 
-  int best = -1; float bestDx = maxDx;
+  // Accept any event whose envelope span [ex, ex+envW] contains mx.
+  // Among those, pick the one with the nearest start.
+  int best = -1; float bestDx = Float.MAX_VALUE;
   for (int i = 0; i < events.size(); i++) {
     Event e = events.get(i);
     if (e.t < pageStart || e.t >= pageEnd) continue;
-    float dx = abs(mx - eventX(e, pageStart));
+    float ex   = eventX(e, pageStart);
+    float envW = max(e.dur, MIN_ENV_S) / PAGE_DURATION_S * (gR - gL);
+    if (mx < ex - 4 || mx > ex + envW + 4) continue;
+    float dx = abs(mx - ex);
     if (dx < bestDx) { bestDx = dx; best = i; }
   }
   return best;

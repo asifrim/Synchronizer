@@ -169,18 +169,20 @@ boolean midiEnabled = true;
 
 int sliderDragCluster = -1;  // -1 = not dragging
 int sliderDragParam   = -1;  // 0=A 1=D 2=S 3=R
+float[] eventNormRms;        // quantile-normalised RMS per event (indexed by rowIndex)
 
 // --- Data classes ------------------------------------------------------------
 
 class Event {
   float origT;        // detected onset time (ground truth; also saved to CSV)
   float t, dur;       // t may be snapped to a grid tick (visual only)
+  float rms;          // raw energy value from CSV, used for quantile normalisation
   int   rowIndex;     // row in eventsTable, needed for save
   int[] bucketIdx;    // current (possibly edited) bucket index per row
   boolean disabled = false;
-  Event(int rowIndex, float t, float dur, int[] bucketIdx) {
+  Event(int rowIndex, float t, float dur, float rms, int[] bucketIdx) {
     this.rowIndex = rowIndex;
-    this.origT = t; this.t = t; this.dur = dur; this.bucketIdx = bucketIdx;
+    this.origT = t; this.t = t; this.dur = dur; this.rms = rms; this.bucketIdx = bucketIdx;
   }
 }
 
@@ -234,9 +236,11 @@ void setup() {
     int[] bi = new int[rowValues.length];
     for (int i = 0; i < rowValues.length; i++)
       bi[i] = indexOfBucket(rowValues[i], r.getString(csvCols[i]));
-    events.add(new Event(idx, r.getFloat("start_time"), r.getFloat("duration"), bi));
+    events.add(new Event(idx, r.getFloat("start_time"), r.getFloat("duration"),
+                         r.getFloat("energy"), bi));
     idx++;
   }
+  buildQuantileNorms();
 
   waveformTable = loadTable(WAVE_FILE, "header");
   int n = waveformTable.getRowCount();

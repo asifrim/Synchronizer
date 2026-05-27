@@ -178,3 +178,26 @@ void buildPalettes() {
     palettes[4][i] = color(i * 360.0 / N_TRANSIENT_CLUSTERS, 85, 100);
   colorMode(RGB, 255);
 }
+
+void buildQuantileNorms() {
+  int n = events.size();
+  eventNormRms = new float[n];
+  int clusterRow = csvCols.length - 1;
+
+  for (int c = 0; c < N_TRANSIENT_CLUSTERS; c++) {
+    ArrayList<float[]> group = new ArrayList<float[]>();
+    for (int i = 0; i < n; i++) {
+      Event e = events.get(i);
+      if (e.bucketIdx[clusterRow] == c)
+        group.add(new float[]{e.rms, e.rowIndex});
+    }
+    group.sort(new java.util.Comparator<float[]>() {
+      public int compare(float[] a, float[] b) { return Float.compare(a[0], b[0]); }
+    });
+    int sz = group.size();
+    for (int rank = 0; rank < sz; rank++) {
+      int ri = (int)group.get(rank)[1];
+      eventNormRms[ri] = sz > 1 ? (float)rank / (sz - 1) : 1.0;
+    }
+  }
+}

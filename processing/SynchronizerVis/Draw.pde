@@ -75,8 +75,12 @@ void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float
   }
   noStroke();
 
+  int   clusterRow = csvCols.length - 1;
+  float maxEnvH    = rowHeight() * 0.44;
+  int   N_SAMPLES  = 48;
+
   for (Event e : pageEvents) {
-    float x = eventX(e, pageStart);
+    float ex  = eventX(e, pageStart);
     float age = now - e.t;
     float intensity;
     if (e.disabled)       intensity = 0.0;
@@ -84,31 +88,34 @@ void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float
     else if (age > e.dur) intensity = 0.55;
     else                  intensity = 0.55 + 0.45 * pow(1 - age / e.dur, 1.4);
 
+    int   cluster  = max(0, e.bucketIdx[clusterRow]);
+    float normRms  = (eventNormRms != null) ? eventNormRms[e.rowIndex] : 1.0;
+    float envLen   = max(e.dur, MIN_ENV_S);
+    float envW     = envLen / PAGE_DURATION_S * (gR - gL);
+
     for (int row = 0; row < nRows; row++) {
       int b = e.bucketIdx[row];
-      if (b < 0) continue;
-      color c = palettes[row][b];
-      float y = rowCenterY(row);
+      if (b < 0 || e.disabled) continue;
+      color c   = palettes[row][b];
+      float cy  = rowCenterY(row);
+      float maxH = maxEnvH * normRms;
 
-      noFill();
-      if (e.disabled) {
-        stroke(80); strokeWeight(1);
-      } else {
-        stroke(red(c) * 0.5, green(c) * 0.5, blue(c) * 0.5); strokeWeight(1);
+      noStroke();
+      fill(red(c) * intensity, green(c) * intensity, blue(c) * intensity, 200);
+      beginShape();
+      vertex(ex, cy);
+      for (int s = 0; s <= N_SAMPLES; s++) {
+        float p  = (float)s / N_SAMPLES;
+        float v  = envValue(cluster, p);
+        vertex(ex + p * envW, cy - v * maxH);
       }
-      rect(x - cs / 2, y - cs / 2, cs, cs, 5);
-
-      if (!e.disabled) {
-        noStroke();
-        float s = cs * (0.4 + 0.6 * intensity);
-        fill(red(c) * intensity, green(c) * intensity, blue(c) * intensity);
-        rect(x - s / 2, y - s / 2, s, s, 3);
-      }
+      vertex(ex + envW, cy);
+      endShape(CLOSE);
     }
 
     if (e.disabled) {
       stroke(120, 80, 80); strokeWeight(1);
-      line(x - cs / 2, gT + 6, x + cs / 2, gB - 6);
+      line(ex - cs / 2, gT + 6, ex + cs / 2, gB - 6);
     }
   }
 
@@ -120,16 +127,18 @@ void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float
     noStroke();
   }
 
-  // Hover highlight around the transient_cluster cell.
+  // Hover highlight spanning the full envelope width on the cluster row.
   if (hoverEventIdx >= 0 && hoverEventIdx < events.size()) {
     Event he = events.get(hoverEventIdx);
     if (he.t >= pageStart && he.t < pageEnd) {
-      int clusterRow = csvCols.length - 1;
-      float hx = eventX(he, pageStart);
-      float hy = rowCenterY(clusterRow);
+      float hx      = eventX(he, pageStart);
+      float hy      = rowCenterY(csvCols.length - 1);
+      float hEnvW   = max(he.dur, MIN_ENV_S) / PAGE_DURATION_S * (gR - gL);
+      float hNormR  = (eventNormRms != null) ? eventNormRms[he.rowIndex] : 1.0;
+      float hMaxH   = maxEnvH * hNormR;
       noFill();
       stroke(255, 255, 255, 200); strokeWeight(2);
-      rect(hx - cs / 2 - 4, hy - cs / 2 - 4, cs + 8, cs + 8, 7);
+      rect(hx - 4, hy - hMaxH - 4, hEnvW + 8, hMaxH + 8, 5);
       noStroke();
     }
   }
