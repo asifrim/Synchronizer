@@ -81,6 +81,7 @@ color[] segmentColors;
 color[] divisionColors;
 color[] chromaColors;          // 12-pitch-class palette for note bars
 float[] wavePeaks;
+float   waveformWindowDur;    // duration of each wavePeaks window in seconds
 float[] snapTickTimes;        // sorted 1/32 tick times — snap targets
 boolean gridSnapEnabled = true;
 float   trackDuration;
@@ -98,6 +99,9 @@ final String[] rowNames = {"pitch", "brightness", "energy", "timbre", "cluster"}
 final String[] csvCols  = {"pitch_bucket", "brightness_bucket", "energy_bucket", "timbre_cluster", "transient_cluster"};
 
 color[][] palettes;
+
+// Hover state — updated by mouseMoved(); used for digit-key cluster reassignment.
+int hoverEventIdx = -1;
 
 // Drag state for right-click bucket editing.
 int   dragEventIdx     = -1;
@@ -198,6 +202,7 @@ void setup() {
 
   sound = new SoundFile(this, AUDIO_FILE);
   trackDuration = sound.duration();
+  waveformWindowDur = (wavePeaks.length > 0) ? trackDuration / wavePeaks.length : 1.0 / 44100;
 
   buildWaveformBuffer();
 
@@ -352,12 +357,15 @@ void buildWaveformBuffer() {
 
   waveformBuffer.stroke(220, 230, 245);
   waveformBuffer.strokeWeight(1);
-  int n = wavePeaks.length;
+  int   n   = wavePeaks.length;
   float mid = wH / 2.0;
-  for (int i = 0; i < n; i++) {
-    float x = (float) i / n * wW;
-    float h = wavePeaks[i] * (wH / 2) * 0.95;
-    waveformBuffer.line(x, mid - h, x, mid + h);
+  for (int px = 0; px < wW; px++) {
+    int i0 = max(0,     (int)((float) px      / wW * n));
+    int i1 = min(n - 1, (int)((float)(px + 1) / wW * n));
+    float p = 0;
+    for (int i = i0; i <= i1; i++) p = max(p, wavePeaks[i]);
+    float h = p * (wH / 2) * 0.95;
+    waveformBuffer.line(px, mid - h, px, mid + h);
   }
   waveformBuffer.endDraw();
 }
@@ -452,11 +460,38 @@ void draw() {
   drawHUD(now, currentPage, pageEvents.size());
 }
 
+void drawGridWaveformBackground(float pageStart, float pageEnd) {
+  float gL = gridLeft(), gR = gridRight();
+  float gT = gridTop(), gB = gridBottom();
+  float mid   = (gT + gB) * 0.5;
+  float halfH = (gB - gT) * 0.48;
+  float pageW = gR - gL;
+  float pageDur = pageEnd - pageStart;
+  int   n = wavePeaks.length;
+
+  stroke(55, 68, 95);
+  strokeWeight(1);
+  noFill();
+  for (int px = (int)gL; px <= (int)gR; px++) {
+    float t0 = pageStart + (px - gL)       / pageW * pageDur;
+    float t1 = pageStart + (px - gL + 1.0) / pageW * pageDur;
+    int i0 = max(0,     (int)(t0 / waveformWindowDur));
+    int i1 = min(n - 1, (int)(t1 / waveformWindowDur));
+    if (i1 < i0) i1 = i0;
+    float p = 0;
+    for (int i = i0; i <= i1; i++) p = max(p, wavePeaks[i]);
+    float h = p * halfH;
+    line(px, mid - h, px, mid + h);
+  }
+}
+
 void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float now) {
   float gL = gridLeft(), gR = gridRight(), gT = gridTop(), gB = gridBottom();
   float rowH = rowHeight();
   float cs   = cellSize();
   int   nRows = rowValues.length;
+
+  drawGridWaveformBackground(pageStart, pageEnd);
 
   textAlign(LEFT, CENTER);
   textSize(18);
@@ -519,6 +554,21 @@ void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float
     strokeWeight(2);
     line(playX, gT - 12, playX, gB + 12);
     noStroke();
+  }
+
+  // Hover highlight: ring around the transient_cluster cell of the hovered event.
+  if (hoverEventIdx >= 0 && hoverEventIdx < events.size()) {
+    Event he = events.get(hoverEventIdx);
+    if (he.t >= pageStart && he.t < pageEnd) {
+      int clusterRow = csvCols.length - 1;  // transient_cluster is always last
+      float hx = eventX(he, pageStart);
+      float hy = rowCenterY(clusterRow);
+      noFill();
+      stroke(255, 255, 255, 200);
+      strokeWeight(2);
+      rect(hx - cs / 2 - 4, hy - cs / 2 - 4, cs + 8, cs + 8, 7);
+      noStroke();
+    }
   }
 }
 
@@ -765,6 +815,15 @@ void drawHUD(float now, int page, int eventsThisPage) {
     fill(255, 230, 80);
     textAlign(LEFT, TOP);
     text("editing event " + dragEventIdx + " — " + name + ": " + fromVal + " → " + toVal, 24, 50);
+  } else if (hoverEventIdx >= 0 && hoverEventIdx < events.size()) {
+    Event e = events.get(hoverEventIdx);
+    int clusterRow = csvCols.length - 1;
+    int cur = e.bucketIdx[clusterRow];
+    String curLabel = (cur >= 0 && cur < rowValues[clusterRow].length) ? rowValues[clusterRow][cur] : "?";
+    fill(200, 200, 255);
+    textAlign(LEFT, TOP);
+    text("event " + hoverEventIdx + "   cluster: " + curLabel +
+         "   press 0-" + (rowValues[clusterRow].length - 1) + " to reassign", 24, 50);
   }
 
   if (savedNoticeUntil > millis()) {
@@ -851,6 +910,10 @@ void mouseReleased() {
   dragRow      = -1;
 }
 
+void mouseMoved() {
+  hoverEventIdx = findEventNear(mouseX, mouseY);
+}
+
 // --- Keys --------------------------------------------------------------------
 
 void keyPressed() {
@@ -886,6 +949,14 @@ void keyPressed() {
   if (key == '=' || key == '+') {
     playbackRate = min(2.0, playbackRate + 0.25);
     sound.rate(playbackRate);
+  }
+  // Digit keys — reassign transient_cluster on the hovered event.
+  if (hoverEventIdx >= 0 && key >= '0' && key <= '9') {
+    int digit = key - '0';
+    int clusterRow = csvCols.length - 1;
+    if (digit < rowValues[clusterRow].length) {
+      events.get(hoverEventIdx).bucketIdx[clusterRow] = digit;
+    }
   }
 }
 
