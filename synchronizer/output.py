@@ -23,6 +23,7 @@ def write_csv(rows: list[ClassifiedTransient], path: str | Path) -> None:
         *mfcc_cols,
         "pitch_bucket", "brightness_bucket", "energy_bucket", "duration_bucket",
         "timbre_cluster",
+        "transient_cluster",
     ]
 
     with path.open("w", newline="") as f:
@@ -47,4 +48,5 @@ def write_csv(rows: list[ClassifiedTransient], path: str | Path) -> None:
                 c.energy_bucket,
                 c.duration_bucket,
                 c.timbre_cluster,
+                c.transient_cluster,
             ])

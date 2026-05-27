@@ -5,7 +5,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .classify import DEFAULT_N_TIMBRE_CLUSTERS, classify
+from .classify import DEFAULT_CLUSTER_K_MAX, DEFAULT_N_TIMBRE_CLUSTERS, classify
 from .detect import DetectionConfig, detect_onsets, load_audio
 from .features import extract_features
 from .grid import build_grid, write_grid
@@ -49,6 +49,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Don't snap onsets to preceding minimum.")
     p.add_argument("--timbre-clusters", type=int, default=DEFAULT_N_TIMBRE_CLUSTERS,
                    help=f"K for k-means timbre clustering (default {DEFAULT_N_TIMBRE_CLUSTERS}).")
+    p.add_argument("--cluster-k-max", type=int, default=DEFAULT_CLUSTER_K_MAX,
+                   help=f"Upper bound on k when searching for the best holistic transient "
+                        f"clustering (default {DEFAULT_CLUSTER_K_MAX}, chosen by silhouette score).")
     p.add_argument("--n-segments", type=int, default=12,
                    help="Target number of structural segments (default 12).")
     p.add_argument("--n-segment-labels", type=int, default=4,
@@ -100,7 +103,11 @@ def main(argv: list[str] | None = None) -> int:
     y, sr = load_audio(str(in_path), sr=cfg.sr)
     onsets = detect_onsets(y, sr, cfg)
     feats = extract_features(y, sr, onsets, hop_length=cfg.hop_length, compute_pitch=not args.no_pitch)
-    classified = classify(feats, n_timbre_clusters=args.timbre_clusters)
+    classified, chosen_k, silhouette = classify(
+        feats,
+        n_timbre_clusters=args.timbre_clusters,
+        cluster_k_max=args.cluster_k_max,
+    )
     write_csv(classified, args.output)
 
     # Waveform peaks for the Processing visualizer — always derived from the
@@ -111,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     write_waveform(original_input, waveform_path)
 
     print(f"{in_path.name}: {len(classified)} transients -> {args.output}")
+    print(f"transient clusters: k={chosen_k} (silhouette={silhouette:.3f})")
     print(f"waveform -> {waveform_path}")
 
     # Structural + tempo analysis, both computed from the original mix (the

@@ -20,12 +20,14 @@
 //                 onset and beat-tracking algorithms place a "kick on the
 //                 beat" a few ms apart, so without snap the rect centers
 //                 sit just off the ticks)
+//   - / =         slow down / speed up (0.25x steps, range 0.25x–2.0x; alters pitch)
 //   ctrl/cmd+s    save edits to <basename>_v<N>.csv in data/
 //
 // Mouse:
-//   left-click on an event      toggle disabled (excluded from saved CSV)
-//   right-click + drag on cell  drag up = higher bucket value
-//                               (drag down = lower), per-row bucket ladder
+//   left-click on an event        toggle disabled (excluded from saved CSV)
+//   shift+left-click on an event  preview: plays from onset for its duration, then stops
+//   right-click + drag on cell    drag up = higher bucket value
+//                                 (drag down = lower), per-row bucket ladder
 //
 // Data files in data/:
 //   <AUDIO_FILE>   the audio that plays (WAV/MP3/AIFF/OGG — Processing Sound
@@ -40,20 +42,21 @@
 import processing.sound.*;
 import java.io.File;
 
-final String AUDIO_FILE     = "06 Mdrmx.wav";
-final String CSV_FILE       = "06_Mdrmx.csv";
-final String WAVE_FILE      = "06_Mdrmx_waveform.csv";
-final String SEGMENTS_FILE  = "06_Mdrmx_segments.csv";
-final String GRID_FILE      = "06_Mdrmx_grid.csv";
+final String AUDIO_FILE     = "02_Key_Nell.wav";
+final String CSV_FILE       = "02_Key_Nell.csv";
+final String WAVE_FILE      = "02_Key_Nell_waveform.csv";
+final String SEGMENTS_FILE  = "02_Key_Nell_segments.csv";
+final String GRID_FILE      = "02_Key_Nell_grid.csv";
 // Per-stem melody CSVs. Sketch loads each lazily (skipped if absent), so
 // adding/removing a stem just means dropping the file in or out of data/.
 final String[] MELODY_STEMS = {"vocals", "bass", "other"};
 final String[] MELODY_FILES = {
-  "06_Mdrmx_vocals_melody.csv",
-  "06_Mdrmx_bass_melody.csv",
-  "06_Mdrmx_other_melody.csv",
+  "02_Key_Nell_vocals_melody.csv",
+  "02_Key_Nell_bass_melody.csv",
+  "02_Key_Nell_other_melody.csv",
 };
-final int   N_TIMBRE_CLUSTERS = 6;
+final int   N_TIMBRE_CLUSTERS     = 6;
+final int   N_TRANSIENT_CLUSTERS  = 8;
 final int   N_SEGMENT_LABELS  = 4;
 final int[] DIVISIONS         = {4, 8, 16, 32};  // metronome note values
 final float PAGE_DURATION_S   = 4.0;
@@ -88,10 +91,11 @@ final String[] BRIGHTNESS = {"dark", "mid", "bright"};
 final String[] ENERGY     = {"soft", "medium", "loud"};
 final String[] DURATION   = {"short", "medium", "long"};
 String[] TIMBRE;
+String[] TRANSIENT_CLUSTER;
 
 String[][] rowValues;
-final String[] rowNames = {"pitch", "brightness", "energy", "duration", "timbre"};
-final String[] csvCols  = {"pitch_bucket", "brightness_bucket", "energy_bucket", "duration_bucket", "timbre_cluster"};
+final String[] rowNames = {"pitch", "brightness", "energy", "timbre", "cluster"};
+final String[] csvCols  = {"pitch_bucket", "brightness_bucket", "energy_bucket", "timbre_cluster", "transient_cluster"};
 
 color[][] palettes;
 
@@ -100,6 +104,12 @@ int   dragEventIdx     = -1;
 int   dragRow          = -1;
 int   dragStartBucket  = -1;
 float dragStartY       = 0;
+
+// Playback rate (1.0 = normal, 0.5 = half speed, etc.).
+float playbackRate = 1.0;
+
+// Preview stop: when >= 0, pause as soon as the playhead crosses this time.
+float stopAtTime = -1;
 
 // Transient save-notice (HUD).
 String savedNotice       = "";
@@ -155,7 +165,9 @@ void setup() {
 
   TIMBRE = new String[N_TIMBRE_CLUSTERS];
   for (int i = 0; i < N_TIMBRE_CLUSTERS; i++) TIMBRE[i] = str(i);
-  rowValues = new String[][]{PITCH, BRIGHTNESS, ENERGY, DURATION, TIMBRE};
+  TRANSIENT_CLUSTER = new String[N_TRANSIENT_CLUSTERS];
+  for (int i = 0; i < N_TRANSIENT_CLUSTERS; i++) TRANSIENT_CLUSTER[i] = str(i);
+  rowValues = new String[][]{PITCH, BRIGHTNESS, ENERGY, TIMBRE, TRANSIENT_CLUSTER};
 
   buildPalettes();
 
@@ -189,7 +201,7 @@ void setup() {
 
   buildWaveformBuffer();
 
-  sound.play();
+  sound.rate(playbackRate);
 }
 
 void loadSegments() {
@@ -364,11 +376,14 @@ void buildPalettes() {
                              color(90, 200, 130), color(240, 100, 100) };
   palettes[1] = new color[]{ color(40, 70, 130), color(200, 170, 60), color(250, 240, 200) };
   palettes[2] = new color[]{ color(90, 80, 120), color(160, 130, 200), color(220, 80, 230) };
-  palettes[3] = new color[]{ color(235, 110, 80), color(220, 200, 80), color(90, 200, 220) };
-  palettes[4] = new color[N_TIMBRE_CLUSTERS];
+  palettes[3] = new color[N_TIMBRE_CLUSTERS];
+  palettes[4] = new color[N_TRANSIENT_CLUSTERS];
   colorMode(HSB, 360, 100, 100);
   for (int i = 0; i < N_TIMBRE_CLUSTERS; i++) {
-    palettes[4][i] = color(i * 360.0 / N_TIMBRE_CLUSTERS, 70, 95);
+    palettes[3][i] = color(i * 360.0 / N_TIMBRE_CLUSTERS, 70, 95);
+  }
+  for (int i = 0; i < N_TRANSIENT_CLUSTERS; i++) {
+    palettes[4][i] = color(i * 360.0 / N_TRANSIENT_CLUSTERS, 85, 100);
   }
   colorMode(RGB, 255);
 }
@@ -378,21 +393,21 @@ void buildPalettes() {
 float gridLeft()   { return 140; }
 float gridRight()  { return width - 40; }
 float gridTop()    { return 90; }
-float gridBottom() { return height - 480; }
+float gridBottom() { return height - 650; }
 float rowHeight()  { return (gridBottom() - gridTop()) / rowValues.length; }
 float cellSize()   { return min(rowHeight() * 0.7, 48); }
 
 // Melody panel — three rows (vocals/bass/other) of pitched note bars, sharing
 // the event grid's horizontal extent so notes line up with the events above.
-float melodyTop()    { return height - 460; }
-float melodyBottom() { return height - 335; }
+float melodyTop()    { return height - 630; }
+float melodyBottom() { return height - 295; }
 float melodyRowH()   { return (melodyBottom() - melodyTop()) / MELODY_STEMS.length; }
 float melodyRowY(int row) { return melodyTop() + row * melodyRowH() + melodyRowH() / 2; }
 
 // Metronome grid panel — sits between the melody panel and the waveform,
 // sharing the event grid's horizontal extent and page window so ticks line up
 // with the onset events above them.
-float metroTop()    { return height - 315; }
+float metroTop()    { return height - 275; }
 float metroBottom() { return height - 185; }
 float metroRowH()   { return (metroBottom() - metroTop()) / DIVISIONS.length; }
 float metroRowY(int row) { return metroTop() + row * metroRowH() + metroRowH() / 2; }
@@ -413,6 +428,11 @@ float rowCenterY(int row) {
 
 void draw() {
   background(15);
+
+  if (stopAtTime >= 0 && sound.position() >= stopAtTime) {
+    sound.pause();
+    stopAtTime = -1;
+  }
 
   float now = sound.position();
   int   currentPage = (int) (now / PAGE_DURATION_S);
@@ -507,10 +527,12 @@ void drawMelody(float pageStart, float pageEnd, float now) {
   float gL = gridLeft(), gR = gridRight();
   float rowH = melodyRowH();
 
-  // Row labels + baselines.
+  // Row labels + baselines — only for stems with enough notes to be meaningful.
   textAlign(LEFT, CENTER);
   textSize(14);
   for (int i = 0; i < MELODY_STEMS.length; i++) {
+    ArrayList<Note> list = melodyNotes.get(i);
+    if (list == null || list.size() < 20) continue;
     float y = melodyRowY(i);
     fill(150);
     text(MELODY_STEMS[i], 24, y);
@@ -525,7 +547,7 @@ void drawMelody(float pageStart, float pageEnd, float now) {
   // mini piano-roll without giving up the row-per-stem framing.
   for (int i = 0; i < melodyNotes.size(); i++) {
     ArrayList<Note> list = melodyNotes.get(i);
-    if (list == null) continue;
+    if (list == null || list.size() < 20) continue;
     int loMidi = stemPitchLo(i);
     int hiMidi = stemPitchHi(i);
     float yCenter = melodyRowY(i);
@@ -707,7 +729,8 @@ void drawHUD(float now, int page, int eventsThisPage) {
   fill(200);
   textAlign(LEFT, TOP);
   textSize(14);
-  String state = sound.isPlaying() ? "" : "  [PAUSED]";
+  String rateStr = (playbackRate != 1.0) ? "  [" + nf(playbackRate, 1, 2) + "x]" : "";
+  String state = (sound.isPlaying() ? "" : "  [PAUSED]") + rateStr;
 
   int segIdx = currentSegmentIndex(now);
   String segLabel;
@@ -731,7 +754,7 @@ void drawHUD(float now, int page, int eventsThisPage) {
   textAlign(RIGHT, TOP);
   String snapHint = gridSnapEnabled ? "snap:on" : "snap:off";
   text("space  play/pause     ← →  page seek     r  start     q  " + snapHint +
-       "     ctrl/cmd+s  save", width - 24, 24);
+       "     - / =  speed     ctrl/cmd+s  save", width - 24, 24);
 
   if (dragEventIdx >= 0) {
     Event e = events.get(dragEventIdx);
@@ -795,7 +818,13 @@ void mousePressed() {
   if (eventIdx < 0) return;
   if (mouseButton == LEFT) {
     Event e = events.get(eventIdx);
-    e.disabled = !e.disabled;
+    if (mouseEvent.isShiftDown()) {
+      stopAtTime = e.origT + e.dur;
+      sound.jump(e.origT);
+      sound.rate(playbackRate);
+    } else {
+      e.disabled = !e.disabled;
+    }
   } else if (mouseButton == RIGHT) {
     int row = rowAt(mouseY);
     if (row < 0) return;
@@ -832,6 +861,7 @@ void keyPressed() {
     return;
   }
   if (key == ' ') {
+    stopAtTime = -1;
     if (sound.isPlaying()) sound.pause();
     else sound.play();
     return;
@@ -849,12 +879,22 @@ void keyPressed() {
     gridSnapEnabled = !gridSnapEnabled;
     applyGridSnap();
   }
+  if (key == '-' || key == '_') {
+    playbackRate = max(0.25, playbackRate - 0.25);
+    sound.rate(playbackRate);
+  }
+  if (key == '=' || key == '+') {
+    playbackRate = min(2.0, playbackRate + 0.25);
+    sound.rate(playbackRate);
+  }
 }
 
 void seek(float target) {
+  stopAtTime = -1;
   target = constrain(target, 0, max(0, trackDuration - 0.05));
   boolean wasPlaying = sound.isPlaying();
   sound.jump(target);
+  sound.rate(playbackRate);
   if (!wasPlaying) sound.pause();
 }
 

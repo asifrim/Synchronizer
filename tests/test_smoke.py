@@ -33,12 +33,15 @@ def test_pipeline(tmp_path: Path) -> None:
     feats = extract_features(y, sr, onsets)
     assert len(feats) == len(onsets)
 
-    out = classify(feats)
+    out, chosen_k, silhouette = classify(feats)
     csv_path = tmp_path / "out.csv"
     write_csv(out, csv_path)
 
     text = csv_path.read_text()
     assert text.startswith("index,start_time,duration,")
     header = text.splitlines()[0]
-    assert header.endswith("timbre_cluster")
+    assert "timbre_cluster" in header
+    assert header.endswith("transient_cluster")
+    assert chosen_k >= 1
+    assert -1.0 <= silhouette <= 1.0
     assert text.count("\n") == len(out) + 1  # header + rows
