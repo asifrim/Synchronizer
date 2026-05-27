@@ -39,7 +39,6 @@ python -m synchronizer.cli path/to/track.flac -o out/track.csv
 | `--no-multi-band` | off | Disable multi-band detection (single wideband envelope) |
 | `--merge-tolerance-ms` | 30 | Cross-band merge window in milliseconds |
 | `--timbre-clusters` | 6 | k for k-means MFCC timbre clustering |
-| `--n-transient-clusters` | — | k for holistic k-means clustering |
 | `--n-segments` | 12 | Target structural segments |
 | `--n-segment-labels` | 4 | Distinct section labels (repeated sections share one) |
 | `--no-segments` | off | Skip structural segmentation |
@@ -57,7 +56,7 @@ Four stages with no shared state — each takes the previous stage's output:
 
 2. **Feature extraction** (`features.py`) — for each onset, slices a window (onset to next onset, 50 ms–1 s) and computes RMS, spectral centroid/rolloff/bandwidth, ZCR, MFCCs, and a pyin-based pitch estimate with confidence.
 
-3. **Classification** (`classify.py`) — bucket labels computed as per-track terciles (low/mid/high, dark/mid/bright, soft/medium/loud, short/medium/long). Labels describe a transient *relative to its track*. Timbre clusters from k-means on standardized MFCC vectors, remapped by ascending mean spectral centroid so cluster 0 = darkest, k-1 = brightest.
+3. **Classification** (`classify.py`) — bucket labels computed as per-track terciles (low/mid/high, dark/mid/bright, soft/medium/loud, short/medium/long). Labels describe a transient *relative to its track*. Timbre clusters from k-means on standardized MFCC vectors, remapped by ascending mean spectral centroid so cluster 0 = darkest. Holistic transient clusters are computed for every k from 2 to 8 simultaneously; the silhouette-optimal result is stored in `transient_cluster` and all fixed-k results in `transient_cluster_k2`..`transient_cluster_k8`.
 
 4. **CSV output** (`output.py`) — flat CSV, one row per transient. The column schema is a downstream contract — append columns rather than reordering.
 
@@ -88,64 +87,66 @@ out/track_other_melody.csv  # melody notes, other stem  (--melody)
 
 `processing/SynchronizerVis/` is a Processing 4 sketch that plays the audio and shows:
 
-- **Event grid** — 5 rows (pitch / brightness / energy / duration / timbre cluster), events positioned by `start_time` within the current page window, cells brightening on playhead hit
+- **Event grid** — transient events drawn as ADSR envelope curves, each event's peak height scaled by its quantile-normalized RMS energy within its cluster. The active k-clustering determines which cluster color each event takes.
 - **Melody panel** — per-stem piano roll rows with chroma-colored note bars
 - **Metronome panel** — 1/4, 1/8, 1/16, 1/32 rows; each tick flashes as the playhead crosses it
-- **Waveform strip** — full-track peak envelope, current page highlighted, segment color bands
-- **ADSR panel** (right side) — per-cluster envelope curves with A/D/S/R sliders, LIN/EXP shape toggles, and a live CC level meter
+- **Waveform strip** — full-track peak envelope drawn upward from baseline, current page highlighted, segment color bands
+- **ADSR panel** (right side) — 8 cluster panels in a compact layout. A k-selector strip at the top switches between k=2..8; panels for clusters ≥ active k are greyed out. Each active panel shows an envelope curve, A/D/S/R sliders, and a live CC level meter.
 
 ### Setup
 
-1. Copy output files to `processing/SynchronizerVis/data/`
-2. Convert audio to WAV (Processing Sound does not support FLAC or MP3):
-   ```bash
+1. Run the analyzer and copy output files:
+   ```
    /analyze-track path/to/track.flac
    ```
-   or manually:
-   ```python
-   import librosa, soundfile as sf
-   y, sr = librosa.load("track.flac", sr=None, mono=False)
-   sf.write("processing/SynchronizerVis/data/track.wav",
-            y.T if y.ndim == 2 else y, sr, subtype="PCM_16")
-   ```
-3. Update constants at the top of `SynchronizerVis.pde`:
+   This runs the pipeline, converts to WAV, and copies everything to `processing/SynchronizerVis/data/`.
+
+2. Update sketch constants (or use `/configure-sketch track`):
    ```processing
-   final String AUDIO_FILE  = "track.wav";
-   final String CSV_FILE    = "track.csv";
+   final String AUDIO_FILE        = "track.wav";
+   final String CSV_FILE          = "track.csv";
    // ...
-   final int N_TIMBRE_CLUSTERS    = 6;
-   final int N_TRANSIENT_CLUSTERS = 2;
+   final int    N_TIMBRE_CLUSTERS = 6;   // from --timbre-clusters
+   // N_TRANSIENT_CLUSTERS is always 8 — do not change
    ```
-   Or use the skill: `/configure-sketch track`
-4. Open the sketch in Processing 4 IDE and run. On first run, install the Sound library via Sketch → Import Library → Add Library.
+
+3. Open the sketch in Processing 4 IDE and run. On first run, install the Sound library via Sketch → Import Library → Add Library.
 
 ### Controls
 
-| Key | Action |
-|-----|--------|
+| Key / gesture | Action |
+|---------------|--------|
 | `Space` | Play / pause |
-| `←` / `→` | Seek one page |
+| `←` / `→` | Seek one page back / forward |
 | `r` | Seek to start |
-| `q` | Toggle grid snap |
-| `-` / `=` | Decrease / increase playback speed |
+| `l` | Toggle loop — loops the current 4-second page; press again to continue |
+| `q` | Toggle grid snap (snaps events to nearest 1/32 tick within 30 ms) |
+| `-` / `=` | Decrease / increase playback speed (0.25× steps, 0.25×–2.0×) |
 | `m` | Toggle MIDI output |
 | `Ctrl/Cmd+S` | Save edited events to versioned CSV |
 | `0`–`9` | Reassign hovered event's transient cluster |
-| Left-click event | Toggle disabled |
-| Shift+left-click | Play from event |
-| Right-drag event | Reassign bucket in dragged row |
+| Click stem label | Switch audio playback to that stem (Mix / Percussion / Vocals / Bass / Other) |
+| Left-click event | Toggle disabled (excluded from saved CSV) |
+| Shift+left-click | Preview: play from event onset for its duration, then stop |
+| Right-drag event cell | Drag up/down to reassign bucket value for that row |
+| Click k-selector (panel) | Switch active clustering to k=2..8 |
+| Drag A/D/S/R slider | Reshape envelope for that cluster |
+
+### Stem playback
+
+Clickable pill labels above the event grid (Mix / Percussion / Vocals / Bass / Other) switch the audio between the full mix and Demucs-separated stems. Stems must exist in the `data/` folder; `/copy-stems` copies them without re-running the full analysis.
 
 ## MIDI output
 
-The sketch sends per-cluster ADSR envelopes as 7-bit CC values via `javax.sound.midi`. Create a loopMIDI virtual port named `loopMIDI` (or update `MIDI_PORT_NAME` in `SynchronizerVis.pde`). Cluster `i` maps to CC `BASE_CC + i` on channel `MIDI_CHANNEL`. ADSR settings are saved to `<stem>_adsr.csv` in the sketch `data/` folder and loaded on the next run.
+The sketch sends per-cluster ADSR envelopes as 7-bit CC values via `javax.sound.midi`. Create a loopMIDI virtual port named `loopMIDI` (or update `MIDI_PORT_NAME` in `SynchronizerVis.pde`). Cluster `i` maps to CC `BASE_CC + i` on MIDI channel 1. Only clusters within the active k are sent; the rest hold at 0. ADSR settings are saved to `<stem>_adsr.csv` in the sketch `data/` folder and reloaded on the next run.
 
 ## Claude Code project skills
 
-Two slash commands are available inside Claude Code:
+Three slash commands are available inside Claude Code:
 
 ### `/analyze-track <audio_file> [flags]`
 
-Runs the full pipeline on an audio file, converts it to WAV, and copies all output CSVs to `processing/SynchronizerVis/data/`. Reports transient count and detected cluster dimensions.
+Runs the full pipeline on an audio file, converts it to WAV, copies all output CSVs and Demucs stems to `processing/SynchronizerVis/data/`, and updates the sketch constants.
 
 ```
 /analyze-track audio/my_track.flac --timbre-clusters 8 --melody
@@ -153,10 +154,18 @@ Runs the full pipeline on an audio file, converts it to WAV, and copies all outp
 
 ### `/configure-sketch <stem>`
 
-Updates the constants at the top of `SynchronizerVis.pde` to point at the given track and auto-detects cluster counts from the CSV.
+Updates the constants at the top of `SynchronizerVis.pde` to point at the given track and auto-detects `N_TIMBRE_CLUSTERS` from the CSV. `N_TRANSIENT_CLUSTERS` is always 8 and is left unchanged.
 
 ```
 /configure-sketch my_track
+```
+
+### `/copy-stems <stem>`
+
+Copies Demucs stems for an already-analyzed track from the stems cache to `processing/SynchronizerVis/data/` without re-running separation or analysis.
+
+```
+/copy-stems 04_Krib
 ```
 
 ## Tests
