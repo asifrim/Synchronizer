@@ -172,18 +172,20 @@ float   loopEnd     = 0;
 String savedNotice      = "";
 int    savedNoticeUntil = 0;
 
-// --- ADSR / MIDI state -------------------------------------------------------
+// --- AD / MIDI state ---------------------------------------------------------
 
-float[]   attackFrac, decayFrac, sustainLevel, releaseFrac;
-boolean[] attackExp, decayExp;  // true = exponential curve shape
-float[]   ccVal;      // live envelope value per cluster, 0..1 (for meters)
-int[]     lastSent;   // last quantized CC value sent (-1 = not yet sent)
+float[]   attackFrac, decayFrac;
+boolean[] attackExp, decayExp;   // true = exponential curve shape
+float[]   ccVal;                 // live envelope value per cluster, 0..1
+int[]     lastSent;              // last quantized CC value sent (-1 = not yet sent)
 
 MidiOut midiOut;
 boolean midiEnabled = true;
 
-int sliderDragCluster = -1;  // -1 = not dragging
-int sliderDragParam   = -1;  // 0=A 1=D 2=S 3=R
+int   knobDragCluster    = -1;   // -1 = not dragging
+int   knobDragParam      = -1;   // 0=A  1=D
+float knobDragStartY     = 0;
+float knobDragStartValue = 0;
 float[] eventNormRms;        // quantile-normalised RMS per event (indexed by rowIndex)
 
 int     activeK    = 2;      // which k is active for display/MIDI (MULTI_K_MIN..MULTI_K_MAX_FIXED)

@@ -55,29 +55,33 @@ float rowCenterY(int row) {
 //
 // Within each cluster section (relative to panelClusterY(c)):
 //   2  .. 18    header label strip
-//   20 .. 58    envelope curve (38 px)
-//   62 .. 98    sliders A/D/S/R (centre Y at 62, 74, 86, 98)
-//   112         CC level meter centre
-//
-// LIN/EXP shape toggles are omitted — no room in compact mode.
+//   LEFT  pL+6  .. pL+136   AD envelope curve (cy+20 .. cy+112, 92 px tall)
+//   RIGHT pL+144 .. pL+336  two-column controls:
+//     row 1 (knob centres)   cy + 55
+//     row 2 (toggle centres) cy + 95
+//   116         CC level meter centre (full width)
 
-float panelKSelectorY()       { return 28; }  // centre Y of the k-selector button row
-float panelClusterH()         { return (height - 60) / (float)N_TRANSIENT_CLUSTERS; }
-float panelClusterY(int c)    { return 40 + c * panelClusterH(); }
+float panelKSelectorY()    { return 28; }  // centre Y of the k-selector button row
+float panelClusterH()      { return (height - 60) / (float)N_TRANSIENT_CLUSTERS; }
+float panelClusterY(int c) { return 40 + c * panelClusterH(); }
 
-float panelCurveT(int c)      { return panelClusterY(c) + 20; }
-float panelCurveB(int c)      { return panelCurveT(c) + 38; }
-float panelSliderY(int c, int p) { return panelClusterY(c) + 62 + p * 12; }
-float panelMeterY(int c)      { return panelClusterY(c) + 112; }
+// Envelope curve: left portion of each cluster section.
+float panelCurveL()        { return panelLeft() + 6; }
+float panelCurveR()        { return panelLeft() + 136; }
+float panelCurveT(int c)   { return panelClusterY(c) + 20; }
+float panelCurveB(int c)   { return panelClusterY(c) + 112; }
 
-// --- ADSR slider track -------------------------------------------------------
-// Shared geometry for all four sliders in a cluster section.
+// Rotary knob positions: two columns in the right portion.
+// col 0 = Attack, col 1 = Decay
+float panelKnobCX(int col) { return panelLeft() + 192 + col * 96; }
+float panelKnobCY(int c)   { return panelClusterY(c) + 55; }
+final float KNOB_RADIUS    = 16;
 
-float slTrackL()        { return panelLeft() + 62; }
-float slTrackR()        { return panelLeft() + panelW() - 14; }
-float slTrackW()        { return slTrackR() - slTrackL(); }
-float slValX(float v)   { return slTrackL() + constrain(v, 0, 1) * slTrackW(); }
-float slXtoVal(float mx){ return constrain((mx - slTrackL()) / slTrackW(), 0, 1); }
+// Shape toggles: directly below knobs, same column centres.
+float panelToggleCY(int c) { return panelClusterY(c) + 95; }
+
+// CC level meter: full width at bottom of cluster.
+float panelMeterY(int c)   { return panelClusterY(c) + 116; }
 
 // --- Stem MIDI range helpers (used by drawMelody in Draw.pde) ----------------
 // Values mirror the pyin search ranges in synchronizer/melody.py.

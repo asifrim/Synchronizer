@@ -97,7 +97,7 @@ void mousePressed() {
 }
 
 void mouseDragged() {
-  if (sliderDragCluster >= 0) { panelMouseDragged(); return; }
+  if (knobDragCluster >= 0) { panelMouseDragged(); return; }
   if (dragEventIdx < 0) return;
   float deltaY = dragStartY - mouseY;
   int steps    = (int)(deltaY / DRAG_PIXELS_PER_STEP);
@@ -106,9 +106,9 @@ void mouseDragged() {
 }
 
 void mouseReleased() {
-  if (sliderDragCluster >= 0) {
-    sliderDragCluster = -1;
-    sliderDragParam   = -1;
+  if (knobDragCluster >= 0) {
+    knobDragCluster = -1;
+    knobDragParam   = -1;
     saveAdsr();
     return;
   }

@@ -1,37 +1,37 @@
-// AdsrPanel.pde — ADSR envelope model, right-panel drawing, and slider interaction.
+// AdsrPanel.pde — AD envelope model, right-panel drawing, and knob interaction.
+//
+// Each cluster has an Attack-Decay envelope (no Sustain or Release).
+// Controls per cluster:
+//   LEFT:   envelope curve preview (full cluster height)
+//   RIGHT:  row 1 — A and D rotary knobs
+//           row 2 — LIN/EXP shape toggles for A and D
+//   BOTTOM: CC level meter (full width)
 
 // --- Envelope model ----------------------------------------------------------
 
 void initAdsr() {
   int n = N_TRANSIENT_CLUSTERS;
-  attackFrac   = new float[n];
-  decayFrac    = new float[n];
-  sustainLevel = new float[n];
-  releaseFrac  = new float[n];
-  attackExp    = new boolean[n];
-  decayExp     = new boolean[n];
-  ccVal        = new float[n];
-  lastSent     = new int[n];
+  attackFrac = new float[n];
+  decayFrac  = new float[n];
+  attackExp  = new boolean[n];
+  decayExp   = new boolean[n];
+  ccVal      = new float[n];
+  lastSent   = new int[n];
   for (int i = 0; i < n; i++) {
-    // Defaults vary by cluster so clusters start audibly distinct.
-    attackFrac[i]   = 0.04 + 0.04 * (i % 3);
-    decayFrac[i]    = 0.18;
-    sustainLevel[i] = 0.65 - 0.10 * (i % 3);
-    releaseFrac[i]  = 0.25 + 0.05 * (i % 3);
-    attackExp[i]    = false;
-    decayExp[i]     = false;
+    attackFrac[i] = 0.08 + 0.04 * (i % 4);
+    decayFrac[i]  = 0.70 - 0.05 * (i % 4);
+    attackExp[i]  = false;
+    decayExp[i]   = false;
     clampAdsr(i);
     ccVal[i]    = 0;
-    lastSent[i] = -1;  // force first send
+    lastSent[i] = -1;
   }
   loadAdsr();
 }
 
 void clampAdsr(int c) {
-  attackFrac[c]   = constrain(attackFrac[c],   0, 1);
-  decayFrac[c]    = constrain(decayFrac[c],    0, 1 - attackFrac[c]);
-  releaseFrac[c]  = constrain(releaseFrac[c],  0, 1 - attackFrac[c] - decayFrac[c]);
-  sustainLevel[c] = constrain(sustainLevel[c], 0, 1);
+  attackFrac[c] = constrain(attackFrac[c], 0.01, 0.99);
+  decayFrac[c]  = constrain(decayFrac[c],  0.01, 1.0 - attackFrac[c]);
 }
 
 String adsrFileName() {
@@ -42,17 +42,17 @@ void loadAdsr() {
   File f = new File(dataPath(adsrFileName()));
   if (!f.exists()) return;
   Table t = loadTable(adsrFileName(), "header");
-  // Gracefully handle files written before the attackExp/decayExp columns existed.
-  boolean hasExp = false;
-  for (int i = 0; i < t.getColumnCount(); i++)
-    if (t.getColumnTitle(i).equals("attack_exp")) { hasExp = true; break; }
+  boolean hasDecay = false, hasExp = false;
+  for (int i = 0; i < t.getColumnCount(); i++) {
+    String col = t.getColumnTitle(i);
+    if (col.equals("decay"))      hasDecay = true;
+    if (col.equals("attack_exp")) hasExp   = true;
+  }
   for (TableRow r : t.rows()) {
     int c = r.getInt("cluster");
     if (c < 0 || c >= N_TRANSIENT_CLUSTERS) continue;
-    attackFrac[c]   = r.getFloat("attack");
-    decayFrac[c]    = r.getFloat("decay");
-    sustainLevel[c] = r.getFloat("sustain");
-    releaseFrac[c]  = r.getFloat("release");
+    attackFrac[c] = r.getFloat("attack");
+    if (hasDecay) decayFrac[c] = r.getFloat("decay");
     if (hasExp) {
       attackExp[c] = r.getInt("attack_exp") != 0;
       decayExp[c]  = r.getInt("decay_exp")  != 0;
@@ -66,8 +66,6 @@ void saveAdsr() {
   out.addColumn("cluster");
   out.addColumn("attack");
   out.addColumn("decay");
-  out.addColumn("sustain");
-  out.addColumn("release");
   out.addColumn("attack_exp");
   out.addColumn("decay_exp");
   for (int c = 0; c < N_TRANSIENT_CLUSTERS; c++) {
@@ -75,8 +73,6 @@ void saveAdsr() {
     row.setInt("cluster",    c);
     row.setFloat("attack",   attackFrac[c]);
     row.setFloat("decay",    decayFrac[c]);
-    row.setFloat("sustain",  sustainLevel[c]);
-    row.setFloat("release",  releaseFrac[c]);
     row.setInt("attack_exp", attackExp[c] ? 1 : 0);
     row.setInt("decay_exp",  decayExp[c]  ? 1 : 0);
   }
@@ -86,33 +82,26 @@ void saveAdsr() {
   println(savedNotice);
 }
 
-// Envelope value at normalised phase p ∈ [0, 1).
+// AD envelope value at normalised phase p ∈ [0, 1).
 //
-// Attack  linear  → straight ramp 0 → 1
-// Attack  exp     → t² (slow start, snappy peak — typical for percussive hits)
-//
-// Decay   linear  → straight ramp 1 → S
-// Decay   exp     → (1-t)² (fast initial drop, slow approach to sustain —
-//                  natural capacitor-discharge feel)
-//
-// Release is always linear (S → 0).
+// Attack ramp  linear → 0→1 straight
+//              exp    → t²  (slow start, snappy peak)
+// Decay ramp   linear → 1→0 straight
+//              exp    → (1-t)²  (fast initial drop, slow tail)
+// Silence for any remaining fraction after A+D.
 float envValue(int c, float p) {
   if (p < 0 || p >= 1) return 0;
-  float aF = attackFrac[c], dF = decayFrac[c], rF = releaseFrac[c], S = sustainLevel[c];
-  float relStart = 1 - rF;
+  float aF = attackFrac[c];
+  float dF = decayFrac[c];
   if (p < aF) {
     float t = aF > 0 ? p / aF : 1.0;
     return attackExp[c] ? t * t : t;
   } else if (p < aF + dF) {
     float t = dF > 0 ? (p - aF) / dF : 1.0;
-    if (decayExp[c]) { float inv = 1.0 - t; return S + (1.0 - S) * inv * inv; }
-    return 1.0 - (1.0 - S) * t;
-  } else if (p < relStart) {
-    return S;
-  } else {
-    float t = rF > 0 ? (p - relStart) / rF : 1.0;
-    return S * (1.0 - t);
+    float inv = 1.0 - t;
+    return decayExp[c] ? inv * inv : inv;
   }
+  return 0;
 }
 
 // --- Right-panel drawing -----------------------------------------------------
@@ -125,8 +114,8 @@ void drawKSelector() {
   float btnW = (pW - 20.0) / nk;
 
   for (int k = MULTI_K_MIN; k <= MULTI_K_MAX_FIXED; k++) {
-    float x      = pL + 10 + (k - MULTI_K_MIN) * btnW;
-    boolean act  = (k == activeK);
+    float x     = pL + 10 + (k - MULTI_K_MIN) * btnW;
+    boolean act = (k == activeK);
     noStroke();
     if (act) {
       color col = palettes[0][constrain(k - MULTI_K_MIN, 0, N_TRANSIENT_CLUSTERS - 1)];
@@ -180,7 +169,7 @@ void drawPanelCluster(int c, float now) {
   float cy  = panelClusterY(c);
   color col = inactive ? color(45) : palettes[0][c];
 
-  // Cluster header strip.
+  // Header strip.
   noStroke();
   fill(inactive ? 20 : red(col) * 0.20, inactive ? 20 : green(col) * 0.20, inactive ? 20 : blue(col) * 0.20);
   rect(pL + 4, cy + 2, panelW() - 8, 17, 3);
@@ -189,10 +178,10 @@ void drawPanelCluster(int c, float now) {
   text("cluster " + c + "  CC " + (BASE_CC + c), pL + 10, cy + 10);
 
   drawPanelEnvCurve(c, now);
-  drawPanelSlider(c, 0, "A", attackFrac[c]);
-  drawPanelSlider(c, 1, "D", decayFrac[c]);
-  drawPanelSlider(c, 2, "S", sustainLevel[c]);
-  drawPanelSlider(c, 3, "R", releaseFrac[c]);
+  drawKnob(c, 0, "A", attackFrac[c]);
+  drawKnob(c, 1, "D", decayFrac[c]);
+  drawShapeToggle(c, 0, attackExp[c]);
+  drawShapeToggle(c, 1, decayExp[c]);
   drawPanelMeter(c);
 
   // Grey-out overlay for clusters outside the active k range.
@@ -204,9 +193,8 @@ void drawPanelCluster(int c, float now) {
 }
 
 void drawPanelEnvCurve(int c, float now) {
-  float pL  = panelLeft();
-  float cL  = pL + 6;
-  float cR  = pL + panelW() - 6;
+  float cL  = panelCurveL();
+  float cR  = panelCurveR();
   float cT  = panelCurveT(c);
   float cB  = panelCurveB(c);
   color col = palettes[0][c];
@@ -214,44 +202,38 @@ void drawPanelEnvCurve(int c, float now) {
   noStroke(); fill(9, 11, 18);
   rect(cL, cT, cR - cL, cB - cT, 3);
 
-  // Midline and sustain-level gridlines.
-  stroke(28); strokeWeight(1);
-  line(cL + 2, (cT + cB) * 0.5, cR - 2, (cT + cB) * 0.5);
-  stroke(38);
-  float sY = map(sustainLevel[c], 0, 1, cB, cT);
-  line(cL + 2, sY, cR - 2, sY);
-
-  // Phase boundary markers.
-  float xA = map(attackFrac[c],                0, 1, cL, cR);
-  float xD = map(attackFrac[c] + decayFrac[c], 0, 1, cL, cR);
-  float xR = map(1 - releaseFrac[c],           0, 1, cL, cR);
+  // A/D phase boundary.
+  float xA = map(attackFrac[c], 0, 1, cL, cR);
   stroke(35); strokeWeight(1);
   line(xA, cT + 2, xA, cB - 2);
-  line(xD, cT + 2, xD, cB - 2);
-  line(xR, cT + 2, xR, cB - 2);
 
   // Fill under curve.
   noStroke();
   fill(red(col) * 0.15, green(col) * 0.15, blue(col) * 0.15);
   beginShape();
   vertex(cL, cB);
-  for (int i = 0; i <= 200; i++) {
-    float p = (i / 200.0) * 0.9999;
+  for (int i = 0; i <= 120; i++) {
+    float p = (i / 120.0) * 0.9999;
     vertex(map(p, 0, 1, cL, cR), map(envValue(c, p), 0, 1, cB, cT));
   }
   vertex(cR, cB);
   endShape(CLOSE);
 
   // Curve line.
-  stroke(red(col), green(col), blue(col), 220); strokeWeight(2); noFill();
+  stroke(red(col), green(col), blue(col), 220); strokeWeight(1.5); noFill();
   beginShape();
-  for (int i = 0; i <= 200; i++) {
-    float p = (i / 200.0) * 0.9999;
+  for (int i = 0; i <= 120; i++) {
+    float p = (i / 120.0) * 0.9999;
     vertex(map(p, 0, 1, cL, cR), map(envValue(c, p), 0, 1, cB, cT));
   }
   endShape();
 
-  // Live playhead dot — loudest active transient for this cluster.
+  // Phase labels.
+  fill(65); textSize(9); textAlign(CENTER, BOTTOM); noStroke();
+  text("A", (cL + xA) * 0.5, cT);
+  text("D", (xA + cR) * 0.5, cT);
+
+  // Live playhead dot.
   int clusterRow = csvCols.length - 1;
   float maxPhase = -1;
   for (Event e : events) {
@@ -263,70 +245,86 @@ void drawPanelEnvCurve(int c, float now) {
   if (maxPhase >= 0) {
     float px = map(maxPhase, 0, 1, cL, cR);
     float py = map(envValue(c, maxPhase), 0, 1, cB, cT);
-    stroke(255, 255, 180, 60); strokeWeight(1);
+    stroke(255, 255, 180, 55); strokeWeight(1);
     line(px, cT + 2, px, cB - 2);
     noStroke(); fill(255, 255, 200, 210);
-    ellipse(px, py, 7, 7);
+    ellipse(px, py, 6, 6);
   }
 
   // Frame.
   noFill(); stroke(46); strokeWeight(1);
   rect(cL, cT, cR - cL, cB - cT, 3);
-
-  // Phase labels above the curve.
-  fill(80); textSize(10); textAlign(CENTER, BOTTOM);
-  text("A", (cL + xA) * 0.5, cT - 1);
-  text("D", (xA + xD) * 0.5, cT - 1);
-  if (xR - xD > 12) text("S", (xD + xR) * 0.5, cT - 1);
-  text("R", (xR + cR) * 0.5, cT - 1);
-  noStroke();
 }
 
-void drawPanelSlider(int c, int param, String label, float value) {
-  float trackY = panelSliderY(c, param);
-  float tL = slTrackL(), tR = slTrackR();
-  float hX = slValX(value);
-  float tH = 4, hR = 7;
+// Draw a rotary knob. param: 0=A 1=D. Vertical drag to change value.
+void drawKnob(int c, int param, String label, float value) {
+  float cx  = panelKnobCX(param);
+  float cy  = panelKnobCY(c);
+  float r   = KNOB_RADIUS;
   color col = palettes[0][c];
+  boolean active = (knobDragCluster == c && knobDragParam == param);
 
-  fill(160); textAlign(RIGHT, CENTER); textSize(11);
-  text(label + " " + nf(value, 1, 2), panelLeft() + 58, trackY);
+  // Arc sweep: 135° (7 o'clock) clockwise 270° to 45° (5 o'clock)
+  float arcStart = radians(135);
+  float arcSweep = radians(270);
 
-  noStroke(); fill(32);
-  rect(tL, trackY - tH * 0.5, tR - tL, tH, 2);
+  // Background track.
+  noFill(); stroke(38); strokeWeight(2.5);
+  arc(cx, cy, r * 2, r * 2, arcStart, arcStart + arcSweep, OPEN);
 
-  fill(red(col) * 0.55, green(col) * 0.55, blue(col) * 0.55);
-  rect(tL, trackY - tH * 0.5, max(0, hX - tL), tH, 2);
+  // Value arc.
+  if (value > 0.005) {
+    stroke(active ? color(255) : col); strokeWeight(2.5);
+    arc(cx, cy, r * 2, r * 2, arcStart, arcStart + value * arcSweep, OPEN);
+  }
 
-  boolean active = (sliderDragCluster == c && sliderDragParam == param);
+  // Indicator dot at current value position.
+  float angle = arcStart + value * arcSweep;
+  float dx = cos(angle) * (r - 4);
+  float dy = sin(angle) * (r - 4);
   noStroke();
-  fill(active ? color(255) : color(195, 205, 225));
-  ellipse(hX, trackY, hR * 2, hR * 2);
-  fill(active ? color(60) : color(40));
-  ellipse(hX, trackY, hR * 0.8, hR * 0.8);
+  fill(active ? color(255) : color(220, 225, 240));
+  ellipse(cx + dx, cy + dy, 5, 5);
+
+  // Centre cap.
+  fill(22); ellipse(cx, cy, r * 0.7, r * 0.7);
+
+  // Label + value below.
+  fill(active ? color(210) : color(100));
+  textAlign(CENTER, TOP); textSize(9);
+  text(label + " " + nf(value, 1, 2), cx, cy + r + 3);
 }
 
+// Draw a single LIN/EXP shape toggle below the knob. Click to cycle.
+void drawShapeToggle(int c, int param, boolean isExp) {
+  float cx  = panelKnobCX(param);
+  float cy  = panelToggleCY(c);
+  color col = palettes[0][c];
+  float bW  = 38, bH = 13;
+
+  noStroke();
+  fill(isExp ? color(red(col)*0.45, green(col)*0.45, blue(col)*0.45) : 32);
+  rect(cx - bW * 0.5, cy - bH * 0.5, bW, bH, 3);
+  textAlign(CENTER, CENTER); textSize(9);
+  fill(isExp ? col : color(80));
+  text(isExp ? "EXP" : "LIN", cx, cy);
+}
 
 void drawPanelMeter(int c) {
   float pL  = panelLeft();
   float my  = panelMeterY(c);
-  float mH  = 18;
+  float mH  = 8;
   float mL  = pL + 8;
   float mW  = panelW() - 16;
   color col = palettes[0][c];
   float v   = constrain(ccVal[c], 0, 1);
 
   noStroke(); fill(18);
-  rect(mL, my - mH * 0.5, mW, mH, 3);
+  rect(mL, my - mH * 0.5, mW, mH, 2);
   fill(red(col) * 0.5, green(col) * 0.5, blue(col) * 0.5, midiEnabled ? 200 : 70);
-  rect(mL, my - mH * 0.5, mW * v, mH, 3);
-  noFill(); stroke(46); strokeWeight(1);
-  rect(mL, my - mH * 0.5, mW, mH, 3);
-
-  int q = constrain(round(v * 127), 0, 127);
-  fill(midiEnabled ? color(200) : color(110));
-  textAlign(LEFT, CENTER); textSize(10);
-  text("CC " + (BASE_CC + c) + "  " + q, mL + 6, my);
+  rect(mL, my - mH * 0.5, mW * v, mH, 2);
+  noFill(); stroke(38); strokeWeight(1);
+  rect(mL, my - mH * 0.5, mW, mH, 2);
   noStroke();
 }
 
@@ -355,14 +353,31 @@ void panelMousePressed() {
     }
   }
 
-  // Sliders: hit zone ±8px from centre Y.
+  // Knobs and toggles per cluster.
   for (int c = 0; c < N_TRANSIENT_CLUSTERS; c++) {
-    for (int p = 0; p < 4; p++) {
-      float sy = panelSliderY(c, p);
-      if (abs(my - sy) <= 8 && mx >= slTrackL() - 10 && mx <= slTrackR() + 10) {
-        sliderDragCluster = c;
-        sliderDragParam   = p;
-        applySliderDrag(c, p, mx);
+    float kcy = panelKnobCY(c);
+    float tcy = panelToggleCY(c);
+
+    // Rotary knobs — hit zone: circle of radius KNOB_RADIUS + 6.
+    for (int param = 0; param < 2; param++) {
+      float kcx = panelKnobCX(param);
+      if (dist(mx, my, kcx, kcy) <= KNOB_RADIUS + 6) {
+        knobDragCluster    = c;
+        knobDragParam      = param;
+        knobDragStartY     = my;
+        knobDragStartValue = (param == 0) ? attackFrac[c] : decayFrac[c];
+        return;
+      }
+    }
+
+    // Shape toggles — hit zone: ±10px vertically, ±22px horizontally.
+    for (int param = 0; param < 2; param++) {
+      float tcx = panelKnobCX(param);
+      if (abs(my - tcy) <= 10 && abs(mx - tcx) <= 22) {
+        if (param == 0) attackExp[c] = !attackExp[c];
+        else            decayExp[c]  = !decayExp[c];
+        for (int i = 0; i < N_TRANSIENT_CLUSTERS; i++) lastSent[i] = -1;
+        saveAdsr();
         return;
       }
     }
@@ -370,16 +385,12 @@ void panelMousePressed() {
 }
 
 void panelMouseDragged() {
-  applySliderDrag(sliderDragCluster, sliderDragParam, mouseX);
-}
-
-void applySliderDrag(int c, int p, float mx) {
-  float v = slXtoVal(mx);
-  if      (p == 0) attackFrac[c]   = v;
-  else if (p == 1) decayFrac[c]    = v;
-  else if (p == 2) sustainLevel[c] = v;
-  else             releaseFrac[c]  = v;
-  clampAdsr(c);
-  // Invalidate lastSent so the new envelope shape is pushed to MIDI immediately.
+  if (knobDragCluster < 0) return;
+  // Drag up = increase, down = decrease. 180px = full 0→1 range.
+  float delta = (knobDragStartY - mouseY) / 180.0;
+  float v = knobDragStartValue + delta;
+  if (knobDragParam == 0) attackFrac[knobDragCluster] = v;
+  else                    decayFrac[knobDragCluster]  = v;
+  clampAdsr(knobDragCluster);
   for (int i = 0; i < N_TRANSIENT_CLUSTERS; i++) lastSent[i] = -1;
 }
