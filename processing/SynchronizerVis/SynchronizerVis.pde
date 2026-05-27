@@ -161,6 +161,9 @@ float dragStartY      = 0;
 
 float playbackRate = 1.0;
 float stopAtTime   = -1;   // pause when playhead crosses this (preview feature)
+boolean loopEnabled = false;
+float   loopStart   = 0;
+float   loopEnd     = 0;
 
 String savedNotice      = "";
 int    savedNoticeUntil = 0;

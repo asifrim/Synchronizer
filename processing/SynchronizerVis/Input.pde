@@ -139,6 +139,13 @@ void keyPressed() {
   if (key == 'q' || key == 'Q') { gridSnapEnabled = !gridSnapEnabled; applyGridSnap(); }
   if (key == '-' || key == '_') { playbackRate = max(0.25, playbackRate - 0.25); sound.rate(playbackRate); }
   if (key == '=' || key == '+') { playbackRate = min(2.0,  playbackRate + 0.25); sound.rate(playbackRate); }
+  if (key == 'l' || key == 'L') {
+    loopEnabled = !loopEnabled;
+    if (loopEnabled) {
+      loopStart = pageStartFor(sound.position());
+      loopEnd   = loopStart + PAGE_DURATION_S;
+    }
+  }
   if (key == 'm' || key == 'M') midiEnabled = !midiEnabled;
   // Digit keys: reassign hovered event's transient_cluster.
   if (key >= '0' && key <= '9' && hoverEventIdx >= 0) {

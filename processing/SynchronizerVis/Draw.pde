@@ -7,6 +7,10 @@ void draw() {
     sound.pause();
     stopAtTime = -1;
   }
+  if (loopEnabled && sound.isPlaying() && sound.position() >= loopEnd) {
+    sound.jump(loopStart);
+    sound.rate(playbackRate);
+  }
 
   float now = sound.position();
   updateMidi(now);
@@ -329,7 +333,7 @@ void drawHUD(float now, int page, int eventsThisPage) {
   fill(200);
   textAlign(LEFT, TOP); textSize(14);
   String rateStr = (playbackRate != 1.0) ? "  [" + nf(playbackRate, 1, 2) + "x]" : "";
-  String state   = (sound.isPlaying() ? "" : "  [PAUSED]") + rateStr;
+  String state   = (sound.isPlaying() ? "" : "  [PAUSED]") + rateStr + (loopEnabled ? "  [LOOP]" : "");
 
   int segIdx = currentSegmentIndex(now);
   String segLabel = "";
@@ -352,7 +356,7 @@ void drawHUD(float now, int page, int eventsThisPage) {
   textAlign(RIGHT, TOP);
   String snapHint = gridSnapEnabled ? "snap:on" : "snap:off";
   text("space play/pause   ← → page   r start   q " + snapHint +
-       "   -/= speed   m midi   ctrl/cmd+s save", hintR, 24);
+       "   -/= speed   l loop   m midi   ctrl/cmd+s save", hintR, 24);
 
   boolean midiOk = (midiOut != null && midiOut.isOpen());
   String midiStatus = midiOk
