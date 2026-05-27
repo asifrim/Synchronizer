@@ -33,10 +33,10 @@ void draw() {
 void drawGridWaveformBackground(float pageStart, float pageEnd) {
   float gL = gridLeft(), gR = gridRight();
   float gT = gridTop(),  gB = gridBottom();
-  float mid    = (gT + gB) * 0.5;
-  float halfH  = (gB - gT) * 0.48;
-  float pageW  = gR - gL;
-  float pageDur = pageEnd - pageStart;
+  float baseline = (gT + gB) * 0.5;
+  float fullH    = (gB - gT) * 0.92;
+  float pageW    = gR - gL;
+  float pageDur  = pageEnd - pageStart;
   int   n = wavePeaks.length;
 
   stroke(55, 68, 95);
@@ -52,8 +52,7 @@ void drawGridWaveformBackground(float pageStart, float pageEnd) {
     if (i1 < i0) i1 = i0;
     float p = 0;
     for (int i = i0; i <= i1; i++) p = max(p, wavePeaks[i]);
-    float h = p * halfH;
-    line(px, mid - h, px, mid + h);
+    line(px, baseline, px, baseline - p * fullH);
   }
 }
 
