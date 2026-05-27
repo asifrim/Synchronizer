@@ -1,6 +1,6 @@
 // SynchronizerVis — paginated event grid + waveform thumbnail.
 //
-// Layout (top to bottom):
+// Layout (top to bottom, left column):
 //   - HUD line
 //   - Event grid: 5 rows (pitch, brightness, energy, duration, timbre).
 //     Each event is a vertical stack of 5 colored cells, positioned by its
@@ -11,6 +11,11 @@
 //     crosses it; on-beat ticks (phase 0) are taller/brighter.
 //   - Waveform thumbnail: full-track peaks; current page window highlighted;
 //     playhead marker shows position in the entire track.
+// Right panel (always visible):
+//   - Per-cluster ADSR envelope curve.
+//   - Sliders for A / D / S / R.
+//   - LIN / EXP shape toggles for attack and decay.
+//   - CC level meter.
 //
 // Keys:
 //   space         play / pause
@@ -21,17 +26,17 @@
 //                 beat" a few ms apart, so without snap the rect centers
 //                 sit just off the ticks)
 //   - / =         slow down / speed up (0.25x steps, range 0.25x–2.0x; alters pitch)
-//   e             toggle the per-cluster ADSR envelope editor
 //   m             toggle MIDI output on/off
-//   0-9           (grid) reassign hovered event's cluster; (editor) select cluster to edit
-//   ctrl/cmd+s    save: editor open -> ADSR config; else event edits to <basename>_v<N>.csv
+//   0-9           reassign hovered event's cluster
+//   ctrl/cmd+s    save event edits to <basename>_v<N>.csv
 //
 // Mouse:
 //   left-click on an event        toggle disabled (excluded from saved CSV)
 //   shift+left-click on an event  preview: plays from onset for its duration, then stops
 //   right-click + drag on cell    drag up = higher bucket value
 //                                 (drag down = lower), per-row bucket ladder
-//   (editor open) drag handles    reshape the selected cluster's ADSR envelope
+//   right panel: drag A/D/S/R sliders   reshape envelope per cluster
+//   right panel: click LIN / EXP        toggle attack or decay curve shape
 //
 // MIDI output (drives TouchDesigner): as the playhead crosses each transient,
 // an ADSR envelope is emitted as a 7-bit MIDI CC. Each transient_cluster has
@@ -51,7 +56,7 @@
 //   <SEGMENTS_FILE> structural segments (optional), <csv_stem>_segments.csv.
 //   <GRID_FILE>    metronome ticks (optional), <csv_stem>_grid.csv.
 //   <MELODY_*_FILE> per-stem note events (optional), <csv_stem>_<stem>_melody.csv.
-//   <csv_stem>_adsr.csv  per-cluster ADSR params (optional), written by the editor.
+//   <csv_stem>_adsr.csv  per-cluster ADSR params (written on drag release / toggle).
 
 import processing.sound.*;
 import java.io.File;
@@ -150,18 +155,18 @@ int    savedNoticeUntil  = 0;
 
 // Per-cluster ADSR (fractions of the envelope length; sustainLevel is 0..1
 // amplitude). Sized to N_TRANSIENT_CLUSTERS in setup().
-float[] attackFrac, decayFrac, sustainLevel, releaseFrac;
-float[] ccVal;        // current envelope value per cluster, 0..1 (for meters)
-int[]   lastSent;     // last quantized CC value sent per cluster (-1 = none yet)
+float[]   attackFrac, decayFrac, sustainLevel, releaseFrac;
+boolean[] attackExp, decayExp;  // true = exponential curve shape for that segment
+float[]   ccVal;       // current envelope value per cluster, 0..1 (for meters)
+int[]     lastSent;    // last quantized CC value sent per cluster (-1 = none yet)
 
 // MIDI output (see MidiOut.java). midiOut.isOpen() false = port not found.
 MidiOut midiOut;
 boolean midiEnabled = true;
 
-// ADSR editor state.
-boolean editorOpen   = false;
-int     editorCluster = 0;
-int     dragHandle    = -1;   // 0=attack, 1=decay/sustain, 2=release
+// Right-panel slider drag state (-1 = not dragging).
+int sliderDragCluster = -1;
+int sliderDragParam   = -1;  // 0=A, 1=D, 2=S, 3=R
 
 class Event {
   float origT;          // detected onset time (ground truth, also what we save)
@@ -386,7 +391,7 @@ color colorForMidi(int midi) {
 }
 
 void buildWaveformBuffer() {
-  int wW = width - 80;
+  int wW = (int)(panelLeft() - 60);  // matches drawWaveform's wLeft=40, wRight=panelLeft()-20
   int wH = 110;
   waveformBuffer = createGraphics(wW, wH, P2D);
   waveformBuffer.beginDraw();
@@ -445,8 +450,12 @@ void buildPalettes() {
 
 // --- Layout constants — kept consistent between draw and hit-test. -----------
 
+// Right panel takes the rightmost 352px.
+float panelLeft() { return width - 352; }
+float panelW()    { return 342; }
+
 float gridLeft()   { return 140; }
-float gridRight()  { return width - 40; }
+float gridRight()  { return panelLeft() - 20; }
 float gridTop()    { return 90; }
 float gridBottom() { return height - 650; }
 float rowHeight()  { return (gridBottom() - gridTop()) / rowValues.length; }
@@ -479,6 +488,30 @@ float rowCenterY(int row) {
   return gridTop() + row * rowHeight() + rowHeight() / 2;
 }
 
+// --- Right-panel layout helpers ----------------------------------------------
+// Each cluster gets an equal vertical slice of the panel.
+
+float panelClusterH() { return (height - 60) / (float)N_TRANSIENT_CLUSTERS; }
+float panelClusterY(int c) { return 40 + c * panelClusterH(); }
+
+// Within each cluster section (offsets from panelClusterY):
+//   32  ..  162  envelope curve (130px tall)
+//   174 .. 349   sliders: A at 174, D at 218, S at 262, R at 306 (center Y)
+//   362 ..  395  shape toggles row
+//   412 ..  441  CC level meter
+float panelCurveT(int c)           { return panelClusterY(c) + 32; }
+float panelCurveB(int c)           { return panelCurveT(c) + 130; }
+float panelSliderY(int c, int p)   { return panelClusterY(c) + 174 + p * 44; }
+float panelToggleY(int c)          { return panelClusterY(c) + 174 + 4 * 44 + 18; }
+float panelMeterY(int c)           { return panelClusterY(c) + 174 + 4 * 44 + 60; }
+
+// Slider track geometry (shared across all sliders).
+float slTrackL()       { return panelLeft() + 62; }
+float slTrackR()       { return panelLeft() + panelW() - 14; }
+float slTrackW()       { return slTrackR() - slTrackL(); }
+float slValX(float v)  { return slTrackL() + constrain(v, 0, 1) * slTrackW(); }
+float slXtoVal(float mx){ return constrain((mx - slTrackL()) / slTrackW(), 0, 1); }
+
 // --- Draw --------------------------------------------------------------------
 
 void draw() {
@@ -507,10 +540,8 @@ void draw() {
   drawMelody(pageStart, pageEnd, now);
   drawMetro(pageStart, pageEnd, now);
   drawWaveform(now, pageStart, pageEnd);
-  drawCcMeters();
+  drawAdsrPanel(now);
   drawHUD(now, currentPage, pageEvents.size());
-
-  if (editorOpen) drawAdsrEditor();  // overlay drawn last, on top of everything
 }
 
 void drawGridWaveformBackground(float pageStart, float pageEnd) {
@@ -809,8 +840,9 @@ void drawDragOverlay(float pageStart, float pageEnd) {
 void drawWaveform(float now, float pageStart, float pageEnd) {
   float wLeft   = 40;
   float wTop    = height - 160;
-  float wW      = width - 80;
+  float wW      = panelLeft() - 60;   // buffer was built to this width
   float wH      = 110;
+  float wRight  = wLeft + wW;
   float wBottom = wTop + wH;
 
   image(waveformBuffer, wLeft, wTop);
@@ -857,16 +889,18 @@ void drawHUD(float now, int page, int eventsThisPage) {
   );
   fill(200);
 
+  // Right-align hint text to just left of the panel.
+  float hintR = panelLeft() - 20;
   textAlign(RIGHT, TOP);
   String snapHint = gridSnapEnabled ? "snap:on" : "snap:off";
   text("space play/pause   ← → page   r start   q " + snapHint +
-       "   -/= speed   e editor   m midi   ctrl/cmd+s save", width - 24, 24);
+       "   -/= speed   m midi   ctrl/cmd+s save", hintR, 24);
   boolean midiOk = (midiOut != null && midiOut.isOpen());
   String midiStatus = midiOk
     ? ("MIDI → " + midiOut.portName() + (midiEnabled ? "" : "  (muted)"))
     : "MIDI: off (port not found)";
   fill(midiOk && midiEnabled ? color(120, 220, 140) : color(210, 160, 80));
-  text(midiStatus, width - 24, 44);
+  text(midiStatus, hintR, 44);
   fill(200);
 
   if (dragEventIdx >= 0) {
@@ -936,7 +970,8 @@ int rowAt(float my) {
 }
 
 void mousePressed() {
-  if (editorOpen) { editorMousePressed(); return; }
+  if (mouseX >= panelLeft()) { panelMousePressed(); return; }
+
   int eventIdx = findEventNear(mouseX, mouseY);
   if (eventIdx < 0) return;
   if (mouseButton == LEFT) {
@@ -961,7 +996,7 @@ void mousePressed() {
 }
 
 void mouseDragged() {
-  if (editorOpen) { editorMouseDragged(); return; }
+  if (sliderDragCluster >= 0) { panelMouseDragged(); return; }
   if (dragEventIdx < 0) return;
   float deltaY = dragStartY - mouseY;  // drag up = positive
   int steps = (int) (deltaY / DRAG_PIXELS_PER_STEP);
@@ -971,24 +1006,28 @@ void mouseDragged() {
 }
 
 void mouseReleased() {
-  if (editorOpen) { dragHandle = -1; return; }
+  if (sliderDragCluster >= 0) {
+    sliderDragCluster = -1;
+    sliderDragParam   = -1;
+    saveAdsr();  // persist on drag end
+    return;
+  }
   dragEventIdx = -1;
   dragRow      = -1;
 }
 
 void mouseMoved() {
-  if (editorOpen) return;  // suspend hover while the editor overlay is up
+  if (mouseX >= panelLeft()) { hoverEventIdx = -1; return; }
   hoverEventIdx = findEventNear(mouseX, mouseY);
 }
 
 // --- Keys --------------------------------------------------------------------
 
 void keyPressed() {
-  // ctrl/cmd + s — save
+  // ctrl/cmd + s — save events CSV
   if ((keyEvent.isControlDown() || keyEvent.isMetaDown())
-      && (key == 's' || key == 'S' || key == '')) {
-    if (editorOpen) saveAdsr();
-    else            saveEdits();
+      && (key == 's' || key == 'S' || key == '')) {
+    saveEdits();
     return;
   }
   if (key == ' ') {
@@ -1018,19 +1057,13 @@ void keyPressed() {
     playbackRate = min(2.0, playbackRate + 0.25);
     sound.rate(playbackRate);
   }
-  if (key == 'e' || key == 'E') {
-    editorOpen = !editorOpen;
-  }
   if (key == 'm' || key == 'M') {
     midiEnabled = !midiEnabled;  // updateMidi() sends 0s on the next frame when off
   }
-  // Digit keys: in the editor, select the cluster to edit; otherwise reassign
-  // the hovered event's transient_cluster.
+  // Digit keys: reassign hovered event's transient_cluster.
   if (key >= '0' && key <= '9') {
     int digit = key - '0';
-    if (editorOpen) {
-      if (digit < N_TRANSIENT_CLUSTERS) editorCluster = digit;
-    } else if (hoverEventIdx >= 0) {
+    if (hoverEventIdx >= 0) {
       int clusterRow = csvCols.length - 1;
       if (digit < rowValues[clusterRow].length) {
         events.get(hoverEventIdx).bucketIdx[clusterRow] = digit;
@@ -1111,19 +1144,21 @@ void initAdsr() {
   decayFrac    = new float[n];
   sustainLevel = new float[n];
   releaseFrac  = new float[n];
+  attackExp    = new boolean[n];
+  decayExp     = new boolean[n];
   ccVal        = new float[n];
   lastSent     = new int[n];
   for (int i = 0; i < n; i++) {
-    // Defaults vary by cluster index so clusters start audibly distinct;
-    // the user tunes them in the editor. All are fractions of envelope length
-    // except sustainLevel (0..1 amplitude).
+    // Defaults vary by cluster index so clusters start audibly distinct.
     attackFrac[i]   = 0.04 + 0.04 * (i % 3);
     decayFrac[i]    = 0.18;
     sustainLevel[i] = 0.65 - 0.10 * (i % 3);
     releaseFrac[i]  = 0.25 + 0.05 * (i % 3);
+    attackExp[i]    = false;
+    decayExp[i]     = false;
     clampAdsr(i);
     ccVal[i]    = 0;
-    lastSent[i] = -1;     // force a send on the first frame
+    lastSent[i] = -1;  // force a send on the first frame
   }
   loadAdsr();
 }
@@ -1143,6 +1178,11 @@ void loadAdsr() {
   File f = new File(dataPath(adsrFileName()));
   if (!f.exists()) return;  // optional — defaults stand otherwise
   Table t = loadTable(adsrFileName(), "header");
+  // Check for the exp-shape columns added in the panel version.
+  boolean hasExp = false;
+  for (int i = 0; i < t.getColumnCount(); i++) {
+    if (t.getColumnTitle(i).equals("attack_exp")) { hasExp = true; break; }
+  }
   for (TableRow r : t.rows()) {
     int c = r.getInt("cluster");
     if (c < 0 || c >= N_TRANSIENT_CLUSTERS) continue;
@@ -1150,6 +1190,10 @@ void loadAdsr() {
     decayFrac[c]    = r.getFloat("decay");
     sustainLevel[c] = r.getFloat("sustain");
     releaseFrac[c]  = r.getFloat("release");
+    if (hasExp) {
+      attackExp[c] = r.getInt("attack_exp") != 0;
+      decayExp[c]  = r.getInt("decay_exp")  != 0;
+    }
     clampAdsr(c);
   }
 }
@@ -1161,29 +1205,56 @@ void saveAdsr() {
   out.addColumn("decay");
   out.addColumn("sustain");
   out.addColumn("release");
+  out.addColumn("attack_exp");
+  out.addColumn("decay_exp");
   for (int c = 0; c < N_TRANSIENT_CLUSTERS; c++) {
     TableRow row = out.addRow();
-    row.setInt("cluster", c);
-    row.setFloat("attack",  attackFrac[c]);
-    row.setFloat("decay",   decayFrac[c]);
-    row.setFloat("sustain", sustainLevel[c]);
-    row.setFloat("release", releaseFrac[c]);
+    row.setInt("cluster",    c);
+    row.setFloat("attack",   attackFrac[c]);
+    row.setFloat("decay",    decayFrac[c]);
+    row.setFloat("sustain",  sustainLevel[c]);
+    row.setFloat("release",  releaseFrac[c]);
+    row.setInt("attack_exp", attackExp[c] ? 1 : 0);
+    row.setInt("decay_exp",  decayExp[c]  ? 1 : 0);
   }
   saveTable(out, dataPath(adsrFileName()));
   savedNotice      = "saved " + adsrFileName();
-  savedNoticeUntil = millis() + 4000;
+  savedNoticeUntil = millis() + 2000;
   println(savedNotice);
 }
 
-// Envelope value at normalized phase p in [0,1). Returns 0 outside that range.
+// Envelope value at normalized phase p in [0,1).
+//
+// Attack shape:
+//   linear  — straight ramp 0 → 1
+//   exp     — t² curve (slow start, snappy peak — typical for percussive hits)
+//
+// Decay shape:
+//   linear  — straight ramp 1 → S
+//   exp     — (1-t)² curve (fast initial drop, slow approach to sustain —
+//             natural capacitor-discharge feel)
+//
+// Release is always linear (S → 0).
 float envValue(int c, float p) {
   if (p < 0 || p >= 1) return 0;
   float aF = attackFrac[c], dF = decayFrac[c], rF = releaseFrac[c], S = sustainLevel[c];
   float relStart = 1 - rF;
-  if (p < aF)            return aF > 0 ? p / aF : 1;                       // attack 0->1
-  else if (p < aF + dF)  return dF > 0 ? 1 - (1 - S) * (p - aF) / dF : S;  // decay 1->S
-  else if (p < relStart) return S;                                        // sustain
-  else                   return rF > 0 ? S * (1 - (p - relStart) / rF) : 0; // release S->0
+  if (p < aF) {
+    float t = aF > 0 ? p / aF : 1.0;          // 0→1 through attack
+    return attackExp[c] ? t * t : t;
+  } else if (p < aF + dF) {
+    float t = dF > 0 ? (p - aF) / dF : 1.0;   // 0→1 through decay
+    if (decayExp[c]) {
+      float inv = 1.0 - t;
+      return S + (1.0 - S) * inv * inv;         // (1-t)²: fast drop, slow plateau
+    }
+    return 1.0 - (1.0 - S) * t;                 // linear
+  } else if (p < relStart) {
+    return S;                                    // sustain
+  } else {
+    float t = rF > 0 ? (p - relStart) / rF : 1.0;
+    return S * (1.0 - t);                        // linear release S→0
+  }
 }
 
 // --- MIDI output (javax.sound.midi) ------------------------------------------
@@ -1240,136 +1311,317 @@ void updateMidi(float now) {
   }
 }
 
-// --- CC level meters (always visible) ----------------------------------------
+// --- Right-panel ADSR editor -------------------------------------------------
 
-void drawCcMeters() {
-  int nc = N_TRANSIENT_CLUSTERS;
-  float stripTop = height - 40, stripH = 30;
-  float x0 = 40, totalW = width - 80, gap = 10;
-  float barW = (totalW - gap * (nc - 1)) / nc;
-  textSize(12);
-  for (int c = 0; c < nc; c++) {
-    float bx = x0 + c * (barW + gap);
-    color col = palettes[4][c];
-    float v = constrain(ccVal[c], 0, 1);
-    noStroke();
-    fill(20);
-    rect(bx, stripTop, barW, stripH);              // background
-    fill(red(col), green(col), blue(col), midiEnabled ? 220 : 80);
-    rect(bx, stripTop, barW * v, stripH);          // level fill (left -> right)
-    noFill();
-    stroke(60);
-    strokeWeight(1);
-    rect(bx, stripTop, barW, stripH);              // frame
-    int q = constrain(round(v * 127), 0, 127);
-    fill(235);
-    textAlign(LEFT, CENTER);
-    text("c" + c + "  CC" + (BASE_CC + c) + ": " + q, bx + 6, stripTop + stripH / 2);
-  }
+void drawAdsrPanel(float now) {
+  float pL = panelLeft();
+  float pW = panelW();
+
+  // Panel background + left border.
   noStroke();
+  fill(14, 16, 24);
+  rect(pL, 0, pW, height);
+  stroke(42);
+  strokeWeight(1);
+  line(pL, 0, pL, height);
+  noStroke();
+
+  fill(100);
+  textAlign(LEFT, TOP);
+  textSize(11);
+  text("ADSR  ENVELOPES", pL + 8, 8);
+
+  for (int c = 0; c < N_TRANSIENT_CLUSTERS; c++) {
+    drawPanelCluster(c, now);
+    // Divider between clusters.
+    if (c < N_TRANSIENT_CLUSTERS - 1) {
+      stroke(38);
+      strokeWeight(1);
+      line(pL + 6, panelClusterY(c + 1) - 4, pL + pW - 6, panelClusterY(c + 1) - 4);
+      noStroke();
+    }
+  }
 }
 
-// --- ADSR editor overlay -----------------------------------------------------
+void drawPanelCluster(int c, float now) {
+  float pL = panelLeft();
+  float cy = panelClusterY(c);
+  color col = palettes[4][c];
 
-float editPlotL() { return 220; }
-float editPlotR() { return width - 220; }
-float editPlotT() { return 200; }
-float editPlotB() { return 560; }
+  // Cluster header strip.
+  noStroke();
+  fill(red(col) * 0.22, green(col) * 0.22, blue(col) * 0.22);
+  rect(pL + 4, cy + 4, panelW() - 8, 24, 4);
+  fill(red(col), green(col), blue(col));
+  textAlign(LEFT, CENTER);
+  textSize(13);
+  text("cluster " + c + "    CC " + (BASE_CC + c), pL + 12, cy + 16);
 
-float plotX(float frac) { return editPlotL() + constrain(frac, 0, 1) * (editPlotR() - editPlotL()); }
-float plotY(float val)  { return editPlotB() - constrain(val, 0, 1) * (editPlotB() - editPlotT()); }
+  drawPanelEnvCurve(c, now);
+  drawPanelSlider(c, 0, "A", attackFrac[c]);
+  drawPanelSlider(c, 1, "D", decayFrac[c]);
+  drawPanelSlider(c, 2, "S", sustainLevel[c]);
+  drawPanelSlider(c, 3, "R", releaseFrac[c]);
+  drawShapeToggles(c);
+  drawPanelMeter(c);
+}
 
-void drawEnvCurve(int c, color col, float weight, int alpha) {
-  stroke(red(col), green(col), blue(col), alpha);
-  strokeWeight(weight);
+void drawPanelEnvCurve(int c, float now) {
+  float pL = panelLeft();
+  float cL = pL + 6;
+  float cR = pL + panelW() - 6;
+  float cT = panelCurveT(c);
+  float cB = panelCurveB(c);
+  color col = palettes[4][c];
+
+  // Background.
+  noStroke();
+  fill(9, 11, 18);
+  rect(cL, cT, cR - cL, cB - cT, 3);
+
+  // Faint grid: midline and sustain level.
+  float midY = (cT + cB) * 0.5;
+  stroke(28);
+  strokeWeight(1);
+  line(cL + 2, midY, cR - 2, midY);
+  float sY = map(sustainLevel[c], 0, 1, cB, cT);
+  stroke(38);
+  line(cL + 2, sY, cR - 2, sY);
+
+  // ADSR phase boundary markers (faint verticals at A end, D end, R start).
+  float xA = map(attackFrac[c],                  0, 1, cL, cR);
+  float xD = map(attackFrac[c] + decayFrac[c],   0, 1, cL, cR);
+  float xR = map(1 - releaseFrac[c],             0, 1, cL, cR);
+  stroke(35);
+  strokeWeight(1);
+  line(xA, cT + 2, xA, cB - 2);
+  line(xD, cT + 2, xD, cB - 2);
+  line(xR, cT + 2, xR, cB - 2);
+
+  // Filled area under the curve.
+  noStroke();
+  fill(red(col) * 0.15, green(col) * 0.15, blue(col) * 0.15);
+  beginShape();
+  vertex(cL, cB);
+  for (int i = 0; i <= 200; i++) {
+    float p = (i / 200.0) * 0.9999;
+    float v = envValue(c, p);
+    vertex(map(p, 0, 1, cL, cR), map(v, 0, 1, cB, cT));
+  }
+  vertex(cR, cB);
+  endShape(CLOSE);
+
+  // Envelope curve line.
+  stroke(red(col), green(col), blue(col), 220);
+  strokeWeight(2);
   noFill();
   beginShape();
   for (int i = 0; i <= 200; i++) {
-    float p = (i / 200.0) * 0.99999;  // stay just inside [0,1) so release shows
-    vertex(plotX(p), plotY(envValue(c, p)));
+    float p = (i / 200.0) * 0.9999;
+    float v = envValue(c, p);
+    vertex(map(p, 0, 1, cL, cR), map(v, 0, 1, cB, cT));
   }
   endShape();
-}
 
-void drawHandle(float x, float y) {
-  noStroke();
-  fill(255, 240, 120);
-  ellipse(x, y, 14, 14);
-  fill(40);
-  ellipse(x, y, 6, 6);
-}
+  // Playhead dot: show where the loudest currently-active transient sits in the envelope.
+  int clusterRow = csvCols.length - 1;
+  float maxPhase = -1;
+  for (Event e : events) {
+    if (e.disabled || e.bucketIdx[clusterRow] != c) continue;
+    float envLen = max(e.dur, MIN_ENV_S);
+    float p = (now - e.origT) / envLen;
+    if (p >= 0 && p < 1 && p > maxPhase) maxPhase = p;
+  }
+  if (maxPhase >= 0) {
+    float px = map(maxPhase, 0, 1, cL, cR);
+    float pv = envValue(c, maxPhase);
+    float py = map(pv, 0, 1, cB, cT);
+    // Vertical phase line.
+    stroke(255, 255, 180, 60);
+    strokeWeight(1);
+    line(px, cT + 2, px, cB - 2);
+    // Dot on curve.
+    noStroke();
+    fill(255, 255, 200, 210);
+    ellipse(px, py, 7, 7);
+  }
 
-void drawAdsrEditor() {
-  noStroke();
-  fill(0, 0, 0, 195);
-  rect(0, 0, width, height);
-
-  float pL = editPlotL(), pR = editPlotR(), pT = editPlotT(), pB = editPlotB();
-
-  fill(230);
-  textAlign(LEFT, TOP);
-  textSize(20);
-  text("ADSR editor — cluster " + editorCluster + " / " + (N_TRANSIENT_CLUSTERS - 1), pL, pT - 44);
-  fill(170);
-  textSize(13);
-  textAlign(RIGHT, TOP);
-  text("0-9 select cluster    drag handles    ctrl/cmd+s save    e close", pR, pT - 38);
-
-  stroke(80);
-  strokeWeight(1);
+  // Frame.
   noFill();
-  rect(pL, pT, pR - pL, pB - pT);
+  stroke(46);
+  strokeWeight(1);
+  rect(cL, cT, cR - cL, cB - cT, 3);
 
-  // Ghost curves for other clusters, then the selected one bold.
-  for (int c = 0; c < N_TRANSIENT_CLUSTERS; c++) {
-    if (c != editorCluster) drawEnvCurve(c, palettes[4][c], 1, 55);
-  }
-  color col = palettes[4][editorCluster];
-  drawEnvCurve(editorCluster, col, 3, 255);
-
-  float aF = attackFrac[editorCluster], dF = decayFrac[editorCluster];
-  float rF = releaseFrac[editorCluster], S = sustainLevel[editorCluster];
-  drawHandle(plotX(aF),      plotY(1));   // attack peak
-  drawHandle(plotX(aF + dF), plotY(S));   // decay/sustain
-  drawHandle(plotX(1 - rF),  plotY(S));   // release start
-
-  fill(220);
-  textAlign(LEFT, TOP);
-  textSize(15);
-  text("A " + nf(aF, 1, 2) + "    D " + nf(dF, 1, 2) +
-       "    S " + nf(S, 1, 2) + "    R " + nf(rF, 1, 2) +
-       "    (sustain span " + nf(max(0, 1 - aF - dF - rF), 1, 2) + ")", pL, pB + 16);
-  int q = constrain(round(ccVal[editorCluster] * 127), 0, 127);
-  text("CC " + (BASE_CC + editorCluster) + " = " + q +
-       (midiEnabled ? "" : "   (MIDI muted)"), pL, pB + 40);
+  // Phase labels (A D S R) above the curve near each boundary.
+  fill(80);
+  textSize(10);
+  textAlign(CENTER, BOTTOM);
+  text("A", (cL + xA) * 0.5, cT - 1);
+  text("D", (xA + xD) * 0.5, cT - 1);
+  if (xR - xD > 12) text("S", (xD + xR) * 0.5, cT - 1);
+  text("R", (xR + cR) * 0.5, cT - 1);
 
   noStroke();
 }
 
-void editorMousePressed() {
-  int c = editorCluster;
-  float[] hx = { plotX(attackFrac[c]), plotX(attackFrac[c] + decayFrac[c]), plotX(1 - releaseFrac[c]) };
-  float[] hy = { plotY(1),             plotY(sustainLevel[c]),             plotY(sustainLevel[c]) };
-  dragHandle = -1;
-  float best = 16;  // pick radius in px
-  for (int h = 0; h < 3; h++) {
-    float d = dist(mouseX, mouseY, hx[h], hy[h]);
-    if (d < best) { best = d; dragHandle = h; }
+// Draws one ADSR slider (param 0=A, 1=D, 2=S, 3=R) with label and value.
+void drawPanelSlider(int c, int param, String label, float value) {
+  float pL    = panelLeft();
+  float trackY = panelSliderY(c, param);
+  float tL    = slTrackL();
+  float tR    = slTrackR();
+  float hX    = slValX(value);
+  float tH    = 4;
+  float hR    = 7;  // handle radius
+  color col   = palettes[4][c];
+
+  // "A  0.12" combined label at left.
+  fill(160);
+  textAlign(RIGHT, CENTER);
+  textSize(11);
+  text(label + " " + nf(value, 1, 2), pL + 58, trackY);
+
+  // Track background.
+  noStroke();
+  fill(32);
+  rect(tL, trackY - tH * 0.5, tR - tL, tH, 2);
+
+  // Filled portion (cluster color, dimmed).
+  fill(red(col) * 0.55, green(col) * 0.55, blue(col) * 0.55);
+  rect(tL, trackY - tH * 0.5, max(0, hX - tL), tH, 2);
+
+  // Handle.
+  boolean active = (sliderDragCluster == c && sliderDragParam == param);
+  noStroke();
+  fill(active ? color(255, 255, 255) : color(195, 205, 225));
+  ellipse(hX, trackY, hR * 2, hR * 2);
+
+  // Faint inner dot for depth.
+  fill(active ? color(60) : color(40));
+  ellipse(hX, trackY, hR * 0.8, hR * 0.8);
+}
+
+// Draws LIN/EXP shape toggles for attack and decay.
+void drawShapeToggles(int c) {
+  float pL = panelLeft();
+  float ty  = panelToggleY(c);
+  float bW  = 40, bH = 20;
+  float bHH = bH * 0.5;
+
+  // "A:" label.
+  fill(130);
+  textSize(11);
+  textAlign(RIGHT, CENTER);
+  text("A", pL + 24, ty);
+
+  // A-LIN button.
+  drawToggleBtn(pL + 26, ty, bW, bH, !attackExp[c], "LIN", palettes[4][c]);
+  // A-EXP button.
+  drawToggleBtn(pL + 68, ty, bW, bH, attackExp[c],  "EXP", palettes[4][c]);
+
+  // "D:" label.
+  fill(130);
+  textAlign(RIGHT, CENTER);
+  text("D", pL + 148, ty);
+
+  // D-LIN button.
+  drawToggleBtn(pL + 150, ty, bW, bH, !decayExp[c], "LIN", palettes[4][c]);
+  // D-EXP button.
+  drawToggleBtn(pL + 192, ty, bW, bH, decayExp[c],  "EXP", palettes[4][c]);
+}
+
+void drawToggleBtn(float x, float y, float bW, float bH, boolean active, String label, color col) {
+  float bHH = bH * 0.5;
+  if (active) {
+    noStroke();
+    fill(red(col) * 0.55, green(col) * 0.55, blue(col) * 0.55);
+    rect(x, y - bHH, bW, bH, 3);
+    fill(red(col), green(col), blue(col));
+  } else {
+    noFill();
+    stroke(50);
+    strokeWeight(1);
+    rect(x, y - bHH, bW, bH, 3);
+    fill(90);
+    noStroke();
+  }
+  textAlign(CENTER, CENTER);
+  textSize(10);
+  text(label, x + bW * 0.5, y);
+}
+
+// CC level meter bar at the bottom of each cluster section.
+void drawPanelMeter(int c) {
+  float pL  = panelLeft();
+  float my  = panelMeterY(c);
+  float mH  = 18;
+  float mL  = pL + 8;
+  float mR  = pL + panelW() - 8;
+  float mW  = mR - mL;
+  color col = palettes[4][c];
+  float v   = constrain(ccVal[c], 0, 1);
+
+  noStroke();
+  fill(18);
+  rect(mL, my - mH * 0.5, mW, mH, 3);
+
+  fill(red(col) * 0.5, green(col) * 0.5, blue(col) * 0.5, midiEnabled ? 200 : 70);
+  rect(mL, my - mH * 0.5, mW * v, mH, 3);
+
+  noFill();
+  stroke(46);
+  strokeWeight(1);
+  rect(mL, my - mH * 0.5, mW, mH, 3);
+
+  int q = constrain(round(v * 127), 0, 127);
+  fill(midiEnabled ? color(200) : color(110));
+  textAlign(LEFT, CENTER);
+  textSize(10);
+  text("CC " + (BASE_CC + c) + "  " + q, mL + 6, my);
+  noStroke();
+}
+
+// --- Right-panel mouse interaction -------------------------------------------
+
+void panelMousePressed() {
+  float mx = mouseX, my = mouseY;
+
+  for (int c = 0; c < N_TRANSIENT_CLUSTERS; c++) {
+    // Hit-test sliders (hit zone extends ±12px from center y, full track x).
+    for (int p = 0; p < 4; p++) {
+      float sy = panelSliderY(c, p);
+      if (abs(my - sy) <= 12 && mx >= slTrackL() - 10 && mx <= slTrackR() + 10) {
+        sliderDragCluster = c;
+        sliderDragParam   = p;
+        applySliderDrag(c, p, mx);
+        return;
+      }
+    }
+
+    // Hit-test shape toggle buttons.
+    float ty  = panelToggleY(c);
+    float bHH = 10;   // half the 20px button height
+    float pL  = panelLeft();
+    if (abs(my - ty) <= bHH) {
+      if      (mx >= pL + 26  && mx <= pL + 66)  { attackExp[c] = false; saveAdsr(); return; }
+      else if (mx >= pL + 68  && mx <= pL + 108) { attackExp[c] = true;  saveAdsr(); return; }
+      else if (mx >= pL + 150 && mx <= pL + 190) { decayExp[c]  = false; saveAdsr(); return; }
+      else if (mx >= pL + 192 && mx <= pL + 232) { decayExp[c]  = true;  saveAdsr(); return; }
+    }
   }
 }
 
-void editorMouseDragged() {
-  if (dragHandle < 0) return;
-  int c = editorCluster;
-  float frac = constrain((mouseX - editPlotL()) / (editPlotR() - editPlotL()), 0, 1);
-  float val  = constrain((editPlotB() - mouseY) / (editPlotB() - editPlotT()), 0, 1);
-  if (dragHandle == 0) {            // attack peak: x -> attack
-    attackFrac[c] = frac;
-  } else if (dragHandle == 1) {     // decay/sustain: x -> decay end, y -> sustain
-    decayFrac[c]    = frac - attackFrac[c];
-    sustainLevel[c] = val;
-  } else {                          // release start: x -> release
-    releaseFrac[c] = 1 - frac;
-  }
+void panelMouseDragged() {
+  applySliderDrag(sliderDragCluster, sliderDragParam, mouseX);
+}
+
+void applySliderDrag(int c, int p, float mx) {
+  float v = slXtoVal(mx);
+  if      (p == 0) attackFrac[c]   = v;
+  else if (p == 1) decayFrac[c]    = v;
+  else if (p == 2) sustainLevel[c] = v;
+  else             releaseFrac[c]  = v;
   clampAdsr(c);
+  // Invalidate lastSent so the new envelope shape is pushed to MIDI immediately.
+  for (int i = 0; i < N_TRANSIENT_CLUSTERS; i++) lastSent[i] = -1;
 }
