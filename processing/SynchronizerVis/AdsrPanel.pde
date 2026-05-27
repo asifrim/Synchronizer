@@ -143,7 +143,7 @@ void drawAdsrPanel(float now) {
 void drawPanelCluster(int c, float now) {
   float pL  = panelLeft();
   float cy  = panelClusterY(c);
-  color col = palettes[4][c];
+  color col = palettes[0][c];
 
   // Cluster header strip.
   noStroke();
@@ -168,7 +168,7 @@ void drawPanelEnvCurve(int c, float now) {
   float cR  = pL + panelW() - 6;
   float cT  = panelCurveT(c);
   float cB  = panelCurveB(c);
-  color col = palettes[4][c];
+  color col = palettes[0][c];
 
   noStroke(); fill(9, 11, 18);
   rect(cL, cT, cR - cL, cB - cT, 3);
@@ -246,7 +246,7 @@ void drawPanelSlider(int c, int param, String label, float value) {
   float tL = slTrackL(), tR = slTrackR();
   float hX = slValX(value);
   float tH = 4, hR = 7;
-  color col = palettes[4][c];
+  color col = palettes[0][c];
 
   fill(160); textAlign(RIGHT, CENTER); textSize(11);
   text(label + " " + nf(value, 1, 2), panelLeft() + 58, trackY);
@@ -272,13 +272,13 @@ void drawShapeToggles(int c) {
 
   fill(130); textSize(11); textAlign(RIGHT, CENTER);
   text("A", pL + 24, ty);
-  drawToggleBtn(pL + 26,  ty, bW, bH, !attackExp[c], "LIN", palettes[4][c]);
-  drawToggleBtn(pL + 68,  ty, bW, bH,  attackExp[c], "EXP", palettes[4][c]);
+  drawToggleBtn(pL + 26,  ty, bW, bH, !attackExp[c], "LIN", palettes[0][c]);
+  drawToggleBtn(pL + 68,  ty, bW, bH,  attackExp[c], "EXP", palettes[0][c]);
 
   fill(130); textAlign(RIGHT, CENTER);
   text("D", pL + 148, ty);
-  drawToggleBtn(pL + 150, ty, bW, bH, !decayExp[c], "LIN", palettes[4][c]);
-  drawToggleBtn(pL + 192, ty, bW, bH,  decayExp[c], "EXP", palettes[4][c]);
+  drawToggleBtn(pL + 150, ty, bW, bH, !decayExp[c], "LIN", palettes[0][c]);
+  drawToggleBtn(pL + 192, ty, bW, bH,  decayExp[c], "EXP", palettes[0][c]);
 }
 
 void drawToggleBtn(float x, float y, float bW, float bH, boolean active, String label, color col) {
@@ -303,7 +303,7 @@ void drawPanelMeter(int c) {
   float mH  = 18;
   float mL  = pL + 8;
   float mW  = panelW() - 16;
-  color col = palettes[4][c];
+  color col = palettes[0][c];
   float v   = constrain(ccVal[c], 0, 1);
 
   noStroke(); fill(18);
