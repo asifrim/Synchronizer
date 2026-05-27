@@ -1,5 +1,36 @@
 // Input.pde — mouse handlers, keyboard handlers, playback seek, and CSV save.
 
+// --- Stem label hit-testing and switching ------------------------------------
+
+int findStemLabelAt(float mx, float my) {
+  if (my < 61 || my > 83) return -1;
+  float lx = gridLeft();
+  textSize(13);
+  for (int i = 0; i < STEM_LABELS.length; i++) {
+    boolean exists = stemFiles != null && i < stemFiles.length
+                     && (i == 0 || (stemFiles[i].length() > 0
+                         && new File(dataPath(stemFiles[i])).exists()));
+    if (!exists) continue;
+    float bw = textWidth(STEM_LABELS[i]) + 16;
+    if (mx >= lx && mx <= lx + bw) return i;
+    lx += bw + 8;
+  }
+  return -1;
+}
+
+void switchToStem(int idx) {
+  if (idx == activeStem) return;
+  float pos = sound.position();
+  boolean wasPlaying = sound.isPlaying();
+  sound.pause();
+  sound = new SoundFile(this, stemFiles[idx]);
+  trackDuration = sound.duration();
+  sound.jump(constrain(pos, 0, trackDuration - 0.05));
+  sound.rate(playbackRate);
+  if (!wasPlaying) sound.pause();
+  activeStem = idx;
+}
+
 // --- Event hit-testing -------------------------------------------------------
 
 int findEventNear(float mx, float my) {
@@ -37,6 +68,9 @@ int rowAt(float my) {
 
 void mousePressed() {
   if (mouseX >= panelLeft()) { panelMousePressed(); return; }
+
+  int stemIdx = findStemLabelAt(mouseX, mouseY);
+  if (stemIdx >= 0) { switchToStem(stemIdx); return; }
 
   int eventIdx = findEventNear(mouseX, mouseY);
   if (eventIdx < 0) return;

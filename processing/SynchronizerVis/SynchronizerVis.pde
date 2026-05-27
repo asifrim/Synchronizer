@@ -77,6 +77,11 @@ final String[] MELODY_FILES = {
   "04_Krib_bass_melody.csv",
   "04_Krib_other_melody.csv",
 };
+// Demucs stem WAVs for playback switching (set by /configure-sketch).
+final String STEM_DRUMS_FILE  = "04_Krib_drums.wav";
+final String STEM_VOCALS_FILE = "04_Krib_vocals.wav";
+final String STEM_BASS_FILE   = "04_Krib_bass.wav";
+final String STEM_OTHER_FILE  = "04_Krib_other.wav";
 
 // --- Analysis / display config -----------------------------------------------
 
@@ -105,6 +110,12 @@ final int     BASE_CC          = 20;     // cluster i -> CC (BASE_CC + i)
 // even very short transients produce a CC gesture the frame loop can resolve.
 final float   MIN_ENV_S        = 0.08;
 final boolean RELEASE_ON_PAUSE = false;  // true = send 0s on pause instead of holding
+
+// --- Stem playback -----------------------------------------------------------
+
+final String[] STEM_LABELS = {"Mix", "Percussion", "Vocals", "Bass", "Other"};
+String[] stemFiles;   // parallel to STEM_LABELS; set in setup()
+int      activeStem = 0;
 
 // --- Audio / data state ------------------------------------------------------
 
@@ -252,6 +263,8 @@ void setup() {
   applyGridSnap();
   loadMelody();
   buildChromaColors();
+
+  stemFiles = new String[]{AUDIO_FILE, STEM_DRUMS_FILE, STEM_VOCALS_FILE, STEM_BASS_FILE, STEM_OTHER_FILE};
 
   sound = new SoundFile(this, AUDIO_FILE);
   trackDuration    = sound.duration();

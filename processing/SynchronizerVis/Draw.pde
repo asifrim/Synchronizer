@@ -26,6 +26,7 @@ void draw() {
   drawWaveform(now, pageStart, pageEnd);
   drawAdsrPanel(now);
   drawHUD(now, currentPage, pageEvents.size());
+  drawStemLabels();
 }
 
 // --- Event grid --------------------------------------------------------------
@@ -132,6 +133,29 @@ void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float
       rect(hx - 4, gB - hMaxH - 4, hEnvW + 8, hMaxH + 8, 5);
       noStroke();
     }
+  }
+}
+
+// --- Stem playback labels ----------------------------------------------------
+
+void drawStemLabels() {
+  float lx = gridLeft();
+  float ly = 72;
+  textSize(13);
+  textAlign(LEFT, CENTER);
+  for (int i = 0; i < STEM_LABELS.length; i++) {
+    boolean active = (i == activeStem);
+    boolean exists = stemFiles != null && i < stemFiles.length
+                     && (i == 0 || (stemFiles[i].length() > 0
+                         && new File(dataPath(stemFiles[i])).exists()));
+    if (!exists) continue;
+    float bw = textWidth(STEM_LABELS[i]) + 16;
+    noStroke();
+    fill(active ? color(150, 150, 210, 230) : color(55, 55, 70, 200));
+    rect(lx, ly - 11, bw, 22, 5);
+    fill(active ? color(240) : color(155));
+    text(STEM_LABELS[i], lx + 8, ly);
+    lx += bw + 8;
   }
 }
 

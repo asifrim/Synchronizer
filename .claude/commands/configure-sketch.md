@@ -42,6 +42,7 @@ In `processing/SynchronizerVis/data/`, check for:
 - `<stem>_segments.csv`
 - `<stem>_grid.csv`
 - `<stem>_vocals_melody.csv`, `<stem>_bass_melody.csv`, `<stem>_other_melody.csv`
+- `<stem>_drums.wav`, `<stem>_vocals.wav`, `<stem>_bass.wav`, `<stem>_other.wav`
 
 ### 5. Edit `processing/SynchronizerVis/SynchronizerVis.pde`
 Use the Edit tool to update the "Track / file config" block. Change exactly these lines:
@@ -57,6 +58,10 @@ final String[] MELODY_FILES = {
   "<stem>_bass_melody.csv",
   "<stem>_other_melody.csv",
 };
+final String STEM_DRUMS_FILE  = "<stem>_drums.wav";
+final String STEM_VOCALS_FILE = "<stem>_vocals.wav";
+final String STEM_BASS_FILE   = "<stem>_bass.wav";
+final String STEM_OTHER_FILE  = "<stem>_other.wav";
 ```
 
 And in the "Analysis / display config" block:
