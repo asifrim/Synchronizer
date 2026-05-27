@@ -35,7 +35,7 @@ void clampAdsr(int c) {
 }
 
 String adsrFileName() {
-  return CSV_FILE.replaceAll("\\.csv$", "") + "_adsr.csv";
+  return TRACK + "/adsr.csv";
 }
 
 void loadAdsr() {

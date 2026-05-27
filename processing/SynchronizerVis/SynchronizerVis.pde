@@ -63,25 +63,27 @@ import java.io.File;
 // MIDI output lives in MidiOut.java (a plain-Java tab) — the Processing
 // preprocessor can't parse javax.sound.midi's nested types in this .pde.
 
-// --- Track / file config (edit these to switch tracks) -----------------------
+// --- Track / file config (change only TRACK to switch tracks) ----------------
 
-final String AUDIO_FILE     = "04_Krib.wav";
-final String CSV_FILE       = "04_Krib.csv";
-final String WAVE_FILE      = "04_Krib_waveform.csv";
-final String SEGMENTS_FILE  = "04_Krib_segments.csv";
-final String GRID_FILE      = "04_Krib_grid.csv";
+final String TRACK = "04_Krib";
+
+final String AUDIO_FILE    = TRACK + "/track.wav";
+final String CSV_FILE      = TRACK + "/events.csv";
+final String WAVE_FILE     = TRACK + "/waveform.csv";
+final String SEGMENTS_FILE = TRACK + "/segments.csv";
+final String GRID_FILE     = TRACK + "/grid.csv";
 // Per-stem melody CSVs — loaded lazily; skip any that are absent.
 final String[] MELODY_STEMS = {"vocals", "bass", "other"};
 final String[] MELODY_FILES = {
-  "04_Krib_vocals_melody.csv",
-  "04_Krib_bass_melody.csv",
-  "04_Krib_other_melody.csv",
+  TRACK + "/vocals_melody.csv",
+  TRACK + "/bass_melody.csv",
+  TRACK + "/other_melody.csv",
 };
-// Demucs stem WAVs for playback switching (set by /configure-sketch).
-final String STEM_DRUMS_FILE  = "04_Krib_drums.wav";
-final String STEM_VOCALS_FILE = "04_Krib_vocals.wav";
-final String STEM_BASS_FILE   = "04_Krib_bass.wav";
-final String STEM_OTHER_FILE  = "04_Krib_other.wav";
+// Demucs stem WAVs for playback switching.
+final String STEM_DRUMS_FILE  = TRACK + "/drums.wav";
+final String STEM_VOCALS_FILE = TRACK + "/vocals.wav";
+final String STEM_BASS_FILE   = TRACK + "/bass.wav";
+final String STEM_OTHER_FILE  = TRACK + "/other.wav";
 
 // --- Analysis / display config -----------------------------------------------
 

@@ -108,16 +108,30 @@ def main(argv: list[str] | None = None) -> int:
         n_timbre_clusters=args.timbre_clusters,
         cluster_k_max=args.cluster_k_max,
     )
-    write_csv(classified, args.output)
+    # Resolve the output path. If -o is a directory (no suffix) or explicitly
+    # named "events.csv", write canonical sidecar names alongside it.
+    # Otherwise keep the old <stem>_<sidecar>.csv convention for compat.
+    out_arg = Path(args.output)
+    if not out_arg.suffix:
+        # Directory form: -o out/04_Krib  →  out/04_Krib/events.csv
+        csv_path = out_arg / "events.csv"
+    else:
+        csv_path = out_arg
+
+    def sidecar(name: str) -> Path:
+        if csv_path.name == "events.csv":
+            return csv_path.parent / name
+        return csv_path.with_name(csv_path.stem + "_" + name)
+
+    write_csv(classified, csv_path)
 
     # Waveform peaks for the Processing visualizer — always derived from the
     # original input (the audio the user actually plays in the sketch), not
     # the separated stem.
-    csv_path = Path(args.output)
-    waveform_path = csv_path.with_name(csv_path.stem + "_waveform.csv")
+    waveform_path = sidecar("waveform.csv")
     write_waveform(original_input, waveform_path)
 
-    print(f"{in_path.name}: {len(classified)} transients -> {args.output}")
+    print(f"{in_path.name}: {len(classified)} transients -> {csv_path}")
     print(f"transient clusters: k={chosen_k} (silhouette={silhouette:.3f})")
     print(f"waveform -> {waveform_path}")
 
@@ -135,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
                 n_segments=args.n_segments,
                 n_labels=args.n_segment_labels,
             )
-            seg_path = csv_path.with_name(csv_path.stem + "_segments.csv")
+            seg_path = sidecar("segments.csv")
             write_segments(segments, seg_path)
             print(f"segments -> {seg_path} ({len(segments)} segments, "
                   f"{len({s.label for s in segments})} distinct labels)")
@@ -144,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
             tempo_segments = detect_tempo_segments(
                 mix, n_tempo_segments=args.n_tempo_segments
             )
-            tempo_path = csv_path.with_name(csv_path.stem + "_tempo.csv")
+            tempo_path = sidecar("tempo.csv")
             write_tempo_segments(tempo_segments, tempo_path)
             bpms = [s.tempo_bpm for s in tempo_segments if s.tempo_bpm]
             rng = f"{min(bpms):.0f}-{max(bpms):.0f} BPM" if bpms else "n/a"
@@ -152,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if not args.no_grid:
             grid = build_grid(mix.beat_times)
-            grid_path = csv_path.with_name(csv_path.stem + "_grid.csv")
+            grid_path = sidecar("grid.csv")
             write_grid(grid, grid_path)
             print(f"grid -> {grid_path} ({len(grid)} ticks across {len(mix.beat_times)} beats)")
 
@@ -166,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
         stem_paths = extract_stems(original_input, wanted, stems_dir=Path(args.stems_dir))
         for stem_name in wanted:
             notes = detect_notes(stem_paths[stem_name], stem_name)
-            note_path = csv_path.with_name(csv_path.stem + f"_{stem_name}_melody.csv")
+            note_path = sidecar(f"{stem_name}_melody.csv")
             write_notes(notes, note_path)
             print(f"melody/{stem_name} -> {note_path} ({len(notes)} notes)")
 

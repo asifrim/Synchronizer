@@ -19,9 +19,9 @@ out/
 samples/
 stems/
 
-# Processing sketch data: generated CSVs (sketch-saved _v<N> edits, re-runnable
-# analyzer output). The baseline demo CSVs are already committed and stay tracked.
-processing/SynchronizerVis/data/*.csv
+# Processing sketch data: ignore only the versioned edit saves (_v<N>.csv).
+# The canonical per-track files (events.csv, waveform.csv, etc.) are tracked.
+processing/SynchronizerVis/data/**/*_v*.csv
 
 # Processing autosave files
 *.autosave

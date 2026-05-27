@@ -18,13 +18,15 @@ pip install -e ".[demucs]"   # Demucs stem separation for --drums and --melody
 ## Usage
 
 ```bash
-synchronizer path/to/track.flac -o out/track.csv
+synchronizer path/to/track.flac -o out/track_name
 ```
+
+Passing a directory as `-o` (no `.csv` extension) writes all output files inside it with canonical names (`events.csv`, `waveform.csv`, etc.). The old form `-o out/track.csv` is still accepted and uses the `<stem>_<sidecar>.csv` naming convention.
 
 Or without installing the entry point:
 
 ```bash
-python -m synchronizer.cli path/to/track.flac -o out/track.csv
+python -m synchronizer.cli path/to/track.flac -o out/track_name
 ```
 
 ### Flags
@@ -70,18 +72,20 @@ Sidecar analyses run off the original mix (not the four-stage pipeline):
 
 ## Output files
 
-Given `-o out/track.csv`, the pipeline writes:
+Given `-o out/my_track` (directory form), the pipeline writes:
 
 ```
-out/track.csv               # per-transient events (required)
-out/track_waveform.csv      # time, peak  (waveform thumbnail)
-out/track_segments.csv      # song structure sections
-out/track_grid.csv          # metronome grid ticks
-out/track_tempo.csv         # tempo plateaus
-out/track_vocals_melody.csv # melody notes, vocals stem (--melody)
-out/track_bass_melody.csv   # melody notes, bass stem   (--melody)
-out/track_other_melody.csv  # melody notes, other stem  (--melody)
+out/my_track/events.csv         # per-transient events (required)
+out/my_track/waveform.csv       # time, peak  (waveform thumbnail)
+out/my_track/segments.csv       # song structure sections
+out/my_track/grid.csv           # metronome grid ticks
+out/my_track/tempo.csv          # tempo plateaus
+out/my_track/vocals_melody.csv  # melody notes, vocals stem (--melody)
+out/my_track/bass_melody.csv    # melody notes, bass stem   (--melody)
+out/my_track/other_melody.csv   # melody notes, other stem  (--melody)
 ```
+
+The old flat form `-o out/my_track.csv` is still accepted; sidecars are then written as `out/my_track_waveform.csv` etc.
 
 ## Processing 4 visualizer
 
@@ -101,13 +105,11 @@ out/track_other_melody.csv  # melody notes, other stem  (--melody)
    ```
    This runs the pipeline, converts to WAV, and copies everything to `processing/SynchronizerVis/data/`.
 
-2. Update sketch constants (or use `/configure-sketch track`):
+2. Update sketch constants (or use `/configure-sketch track`). Only two lines ever change:
    ```processing
-   final String AUDIO_FILE        = "track.wav";
-   final String CSV_FILE          = "track.csv";
-   // ...
+   final String TRACK            = "my_track";
    final int    N_TIMBRE_CLUSTERS = 6;   // from --timbre-clusters
-   // N_TRANSIENT_CLUSTERS is always 8 — do not change
+   // Everything else is derived from TRACK — do not edit
    ```
 
 3. Open the sketch in Processing 4 IDE and run. On first run, install the Sound library via Sketch → Import Library → Add Library.
