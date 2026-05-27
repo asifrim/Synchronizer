@@ -164,17 +164,69 @@ int currentSegmentIndex(float now) {
   return -1;
 }
 
+void loadKClusters() {
+  int n  = events.size();
+  int nk = MULTI_K_MAX_FIXED - MULTI_K_MIN + 1;
+  kClusters = new int[nk][n];
+
+  // Detect whether the new multi-k columns are present in the CSV.
+  boolean hasMultiK = false;
+  for (int c = 0; c < eventsTable.getColumnCount(); c++) {
+    if (eventsTable.getColumnTitle(c).equals("transient_cluster_k2")) { hasMultiK = true; break; }
+  }
+
+  for (int k = MULTI_K_MIN; k <= MULTI_K_MAX_FIXED; k++) {
+    String col = hasMultiK ? ("transient_cluster_k" + k) : "transient_cluster";
+    boolean colExists = false;
+    for (int c = 0; c < eventsTable.getColumnCount(); c++) {
+      if (eventsTable.getColumnTitle(c).equals(col)) { colExists = true; break; }
+    }
+    for (int i = 0; i < n; i++) {
+      kClusters[k - MULTI_K_MIN][i] = colExists ? eventsTable.getRow(events.get(i).rowIndex).getInt(col) : 0;
+    }
+  }
+
+  // Initialise bucketIdx[0] from the starting activeK.
+  for (int i = 0; i < n; i++)
+    events.get(i).bucketIdx[0] = kClusters[activeK - MULTI_K_MIN][i];
+}
+
+void switchK(int newK) {
+  if (newK < MULTI_K_MIN || newK > MULTI_K_MAX_FIXED) return;
+  activeK = newK;
+  for (int i = 0; i < events.size(); i++)
+    events.get(i).bucketIdx[0] = kClusters[newK - MULTI_K_MIN][i];
+  buildQuantileNorms();
+}
+
 void buildPalettes() {
   palettes = new color[rowValues.length][];
-  palettes[0] = new color[]{ color(90,90,100), color(60,110,220), color(90,200,130), color(240,100,100) };
-  palettes[1] = new color[]{ color(40,70,130), color(200,170,60), color(250,240,200) };
-  palettes[2] = new color[]{ color(90,80,120), color(160,130,200), color(220,80,230) };
-  palettes[3] = new color[N_TIMBRE_CLUSTERS];
-  palettes[4] = new color[N_TRANSIENT_CLUSTERS];
+  palettes[0] = new color[N_TRANSIENT_CLUSTERS];
   colorMode(HSB, 360, 100, 100);
-  for (int i = 0; i < N_TIMBRE_CLUSTERS; i++)
-    palettes[3][i] = color(i * 360.0 / N_TIMBRE_CLUSTERS, 70, 95);
   for (int i = 0; i < N_TRANSIENT_CLUSTERS; i++)
-    palettes[4][i] = color(i * 360.0 / N_TRANSIENT_CLUSTERS, 85, 100);
+    palettes[0][i] = color(i * 360.0 / N_TRANSIENT_CLUSTERS, 85, 100);
   colorMode(RGB, 255);
+}
+
+void buildQuantileNorms() {
+  int n = events.size();
+  eventNormRms = new float[n];
+  int clusterRow = csvCols.length - 1;
+
+  for (int c = 0; c < N_TRANSIENT_CLUSTERS; c++) {
+    ArrayList<float[]> group = new ArrayList<float[]>();
+    for (int i = 0; i < n; i++) {
+      Event e = events.get(i);
+      if (e.bucketIdx[clusterRow] == c)
+        group.add(new float[]{e.rms, e.rowIndex});
+    }
+    group.sort(new java.util.Comparator<float[]>() {
+      public int compare(float[] a, float[] b) { return Float.compare(a[0], b[0]); }
+    });
+    int sz = group.size();
+    for (int rank = 0; rank < sz; rank++) {
+      int ri = (int)group.get(rank)[1];
+      eventNormRms[ri] = sz > 1 ? (float)rank / (sz - 1) : 1.0;
+    }
+  }
 }

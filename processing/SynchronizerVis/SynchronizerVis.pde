@@ -77,11 +77,18 @@ final String[] MELODY_FILES = {
   "04_Krib_bass_melody.csv",
   "04_Krib_other_melody.csv",
 };
+// Demucs stem WAVs for playback switching (set by /configure-sketch).
+final String STEM_DRUMS_FILE  = "04_Krib_drums.wav";
+final String STEM_VOCALS_FILE = "04_Krib_vocals.wav";
+final String STEM_BASS_FILE   = "04_Krib_bass.wav";
+final String STEM_OTHER_FILE  = "04_Krib_other.wav";
 
 // --- Analysis / display config -----------------------------------------------
 
 final int   N_TIMBRE_CLUSTERS    = 6;
-final int   N_TRANSIENT_CLUSTERS = 2;
+final int   N_TRANSIENT_CLUSTERS = 8;  // always 8 panels; activeK controls how many are live
+final int   MULTI_K_MIN          = 2;
+final int   MULTI_K_MAX_FIXED    = 8;
 final int   N_SEGMENT_LABELS     = 4;
 final int[] DIVISIONS            = {4, 8, 16, 32};  // metronome note values
 final float PAGE_DURATION_S      = 4.0;
@@ -105,6 +112,12 @@ final int     BASE_CC          = 20;     // cluster i -> CC (BASE_CC + i)
 // even very short transients produce a CC gesture the frame loop can resolve.
 final float   MIN_ENV_S        = 0.08;
 final boolean RELEASE_ON_PAUSE = false;  // true = send 0s on pause instead of holding
+
+// --- Stem playback -----------------------------------------------------------
+
+final String[] STEM_LABELS = {"Mix", "Percussion", "Vocals", "Bass", "Other"};
+String[] stemFiles;   // parallel to STEM_LABELS; set in setup()
+int      activeStem = 0;
 
 // --- Audio / data state ------------------------------------------------------
 
@@ -135,11 +148,8 @@ String[]       TIMBRE;
 String[]       TRANSIENT_CLUSTER;
 
 String[][]     rowValues;
-final String[] rowNames = {"pitch", "brightness", "energy", "timbre", "cluster"};
-final String[] csvCols  = {
-  "pitch_bucket", "brightness_bucket", "energy_bucket",
-  "timbre_cluster", "transient_cluster"
-};
+final String[] rowNames = {""};
+final String[] csvCols  = {"transient_cluster"};
 
 color[][] palettes;
 
@@ -153,6 +163,9 @@ float dragStartY      = 0;
 
 float playbackRate = 1.0;
 float stopAtTime   = -1;   // pause when playhead crosses this (preview feature)
+boolean loopEnabled = false;
+float   loopStart   = 0;
+float   loopEnd     = 0;
 
 String savedNotice      = "";
 int    savedNoticeUntil = 0;
@@ -169,18 +182,23 @@ boolean midiEnabled = true;
 
 int sliderDragCluster = -1;  // -1 = not dragging
 int sliderDragParam   = -1;  // 0=A 1=D 2=S 3=R
+float[] eventNormRms;        // quantile-normalised RMS per event (indexed by rowIndex)
+
+int     activeK    = 2;      // which k is active for display/MIDI (MULTI_K_MIN..MULTI_K_MAX_FIXED)
+int[][] kClusters;           // kClusters[k-MULTI_K_MIN][eventIdx]
 
 // --- Data classes ------------------------------------------------------------
 
 class Event {
   float origT;        // detected onset time (ground truth; also saved to CSV)
   float t, dur;       // t may be snapped to a grid tick (visual only)
+  float rms;          // raw energy value from CSV, used for quantile normalisation
   int   rowIndex;     // row in eventsTable, needed for save
   int[] bucketIdx;    // current (possibly edited) bucket index per row
   boolean disabled = false;
-  Event(int rowIndex, float t, float dur, int[] bucketIdx) {
+  Event(int rowIndex, float t, float dur, float rms, int[] bucketIdx) {
     this.rowIndex = rowIndex;
-    this.origT = t; this.t = t; this.dur = dur; this.bucketIdx = bucketIdx;
+    this.origT = t; this.t = t; this.dur = dur; this.rms = rms; this.bucketIdx = bucketIdx;
   }
 }
 
@@ -224,7 +242,7 @@ void setup() {
   for (int i = 0; i < N_TIMBRE_CLUSTERS; i++) TIMBRE[i] = str(i);
   TRANSIENT_CLUSTER = new String[N_TRANSIENT_CLUSTERS];
   for (int i = 0; i < N_TRANSIENT_CLUSTERS; i++) TRANSIENT_CLUSTER[i] = str(i);
-  rowValues = new String[][]{PITCH, BRIGHTNESS, ENERGY, TIMBRE, TRANSIENT_CLUSTER};
+  rowValues = new String[][]{TRANSIENT_CLUSTER};
 
   buildPalettes();
 
@@ -232,11 +250,12 @@ void setup() {
   int idx = 0;
   for (TableRow r : eventsTable.rows()) {
     int[] bi = new int[rowValues.length];
-    for (int i = 0; i < rowValues.length; i++)
-      bi[i] = indexOfBucket(rowValues[i], r.getString(csvCols[i]));
-    events.add(new Event(idx, r.getFloat("start_time"), r.getFloat("duration"), bi));
+    events.add(new Event(idx, r.getFloat("start_time"), r.getFloat("duration"),
+                         r.getFloat("energy"), bi));
     idx++;
   }
+  loadKClusters();       // populates kClusters and sets bucketIdx[0] from activeK
+  buildQuantileNorms();
 
   waveformTable = loadTable(WAVE_FILE, "header");
   int n = waveformTable.getRowCount();
@@ -251,6 +270,8 @@ void setup() {
   applyGridSnap();
   loadMelody();
   buildChromaColors();
+
+  stemFiles = new String[]{AUDIO_FILE, STEM_DRUMS_FILE, STEM_VOCALS_FILE, STEM_BASS_FILE, STEM_OTHER_FILE};
 
   sound = new SoundFile(this, AUDIO_FILE);
   trackDuration    = sound.duration();

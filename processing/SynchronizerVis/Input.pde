@@ -1,22 +1,57 @@
 // Input.pde — mouse handlers, keyboard handlers, playback seek, and CSV save.
 
+// --- Stem label hit-testing and switching ------------------------------------
+
+int findStemLabelAt(float mx, float my) {
+  if (my < 61 || my > 83) return -1;
+  float lx = gridLeft();
+  textSize(13);
+  for (int i = 0; i < STEM_LABELS.length; i++) {
+    boolean exists = stemFiles != null && i < stemFiles.length
+                     && (i == 0 || (stemFiles[i].length() > 0
+                         && new File(dataPath(stemFiles[i])).exists()));
+    if (!exists) continue;
+    float bw = textWidth(STEM_LABELS[i]) + 16;
+    if (mx >= lx && mx <= lx + bw) return i;
+    lx += bw + 8;
+  }
+  return -1;
+}
+
+void switchToStem(int idx) {
+  if (idx == activeStem) return;
+  float pos = sound.position();
+  boolean wasPlaying = sound.isPlaying();
+  sound.pause();
+  sound = new SoundFile(this, stemFiles[idx]);
+  trackDuration = sound.duration();
+  sound.jump(constrain(pos, 0, trackDuration - 0.05));
+  sound.rate(playbackRate);
+  if (!wasPlaying) sound.pause();
+  activeStem = idx;
+}
+
 // --- Event hit-testing -------------------------------------------------------
 
 int findEventNear(float mx, float my) {
   float now = sound.position();
   float pageStart = pageStartFor(now);
   float pageEnd   = pageStart + PAGE_DURATION_S;
-  float cs  = cellSize();
-  float maxDx = cs / 2 + 6;
+  float gL = gridLeft(), gR = gridRight();
 
-  if (mx < gridLeft() - maxDx || mx > gridRight() + maxDx) return -1;
+  if (mx < gL || mx > gR) return -1;
   if (my < gridTop() || my > gridBottom()) return -1;
 
-  int best = -1; float bestDx = maxDx;
+  // Accept any event whose envelope span [ex, ex+envW] contains mx.
+  // Among those, pick the one with the nearest start.
+  int best = -1; float bestDx = Float.MAX_VALUE;
   for (int i = 0; i < events.size(); i++) {
     Event e = events.get(i);
     if (e.t < pageStart || e.t >= pageEnd) continue;
-    float dx = abs(mx - eventX(e, pageStart));
+    float ex   = eventX(e, pageStart);
+    float envW = max(e.dur, MIN_ENV_S) / PAGE_DURATION_S * (gR - gL);
+    if (mx < ex - 4 || mx > ex + envW + 4) continue;
+    float dx = abs(mx - ex);
     if (dx < bestDx) { bestDx = dx; best = i; }
   }
   return best;
@@ -33,6 +68,9 @@ int rowAt(float my) {
 
 void mousePressed() {
   if (mouseX >= panelLeft()) { panelMousePressed(); return; }
+
+  int stemIdx = findStemLabelAt(mouseX, mouseY);
+  if (stemIdx >= 0) { switchToStem(stemIdx); return; }
 
   int eventIdx = findEventNear(mouseX, mouseY);
   if (eventIdx < 0) return;
@@ -101,6 +139,13 @@ void keyPressed() {
   if (key == 'q' || key == 'Q') { gridSnapEnabled = !gridSnapEnabled; applyGridSnap(); }
   if (key == '-' || key == '_') { playbackRate = max(0.25, playbackRate - 0.25); sound.rate(playbackRate); }
   if (key == '=' || key == '+') { playbackRate = min(2.0,  playbackRate + 0.25); sound.rate(playbackRate); }
+  if (key == 'l' || key == 'L') {
+    loopEnabled = !loopEnabled;
+    if (loopEnabled) {
+      loopStart = pageStartFor(sound.position());
+      loopEnd   = loopStart + PAGE_DURATION_S;
+    }
+  }
   if (key == 'm' || key == 'M') midiEnabled = !midiEnabled;
   // Digit keys: reassign hovered event's transient_cluster.
   if (key >= '0' && key <= '9' && hoverEventIdx >= 0) {

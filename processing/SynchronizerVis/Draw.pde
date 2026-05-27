@@ -7,6 +7,10 @@ void draw() {
     sound.pause();
     stopAtTime = -1;
   }
+  if (loopEnabled && sound.isPlaying() && sound.position() >= loopEnd) {
+    sound.jump(loopStart);
+    sound.rate(playbackRate);
+  }
 
   float now = sound.position();
   updateMidi(now);
@@ -26,6 +30,7 @@ void draw() {
   drawWaveform(now, pageStart, pageEnd);
   drawAdsrPanel(now);
   drawHUD(now, currentPage, pageEvents.size());
+  drawStemLabels();
 }
 
 // --- Event grid --------------------------------------------------------------
@@ -33,10 +38,10 @@ void draw() {
 void drawGridWaveformBackground(float pageStart, float pageEnd) {
   float gL = gridLeft(), gR = gridRight();
   float gT = gridTop(),  gB = gridBottom();
-  float mid    = (gT + gB) * 0.5;
-  float halfH  = (gB - gT) * 0.48;
-  float pageW  = gR - gL;
-  float pageDur = pageEnd - pageStart;
+  float baseline = gB;
+  float fullH    = (gB - gT) * 0.92;
+  float pageW    = gR - gL;
+  float pageDur  = pageEnd - pageStart;
   int   n = wavePeaks.length;
 
   stroke(55, 68, 95);
@@ -52,8 +57,7 @@ void drawGridWaveformBackground(float pageStart, float pageEnd) {
     if (i1 < i0) i1 = i0;
     float p = 0;
     for (int i = i0; i <= i1; i++) p = max(p, wavePeaks[i]);
-    float h = p * halfH;
-    line(px, mid - h, px, mid + h);
+    line(px, baseline, px, baseline - p * fullH);
   }
 }
 
@@ -64,19 +68,17 @@ void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float
 
   drawGridWaveformBackground(pageStart, pageEnd);
 
-  textAlign(LEFT, CENTER);
-  textSize(18);
-  for (int row = 0; row < nRows; row++) {
-    float y = rowCenterY(row);
-    fill(180);
-    text(rowNames[row], 24, y);
-    stroke(35); strokeWeight(1);
-    line(gL, y, gR, y);
-  }
+  // Baseline rule at the bottom of the grid.
+  stroke(35); strokeWeight(1);
+  line(gL, gB, gR, gB);
   noStroke();
 
+  int   clusterRow = csvCols.length - 1;
+  float maxEnvH    = (gB - gT) * 0.90;
+  int   N_SAMPLES  = 48;
+
   for (Event e : pageEvents) {
-    float x = eventX(e, pageStart);
+    float ex  = eventX(e, pageStart);
     float age = now - e.t;
     float intensity;
     if (e.disabled)       intensity = 0.0;
@@ -84,31 +86,33 @@ void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float
     else if (age > e.dur) intensity = 0.55;
     else                  intensity = 0.55 + 0.45 * pow(1 - age / e.dur, 1.4);
 
+    int   cluster  = max(0, e.bucketIdx[clusterRow]);
+    float normRms  = (eventNormRms != null) ? eventNormRms[e.rowIndex] : 1.0;
+    float envLen   = max(e.dur, MIN_ENV_S);
+    float envW     = envLen / PAGE_DURATION_S * (gR - gL);
+
     for (int row = 0; row < nRows; row++) {
       int b = e.bucketIdx[row];
-      if (b < 0) continue;
-      color c = palettes[row][b];
-      float y = rowCenterY(row);
+      if (b < 0 || e.disabled) continue;
+      color c    = palettes[row][b];
+      float maxH = maxEnvH * normRms;
 
-      noFill();
-      if (e.disabled) {
-        stroke(80); strokeWeight(1);
-      } else {
-        stroke(red(c) * 0.5, green(c) * 0.5, blue(c) * 0.5); strokeWeight(1);
+      noStroke();
+      fill(red(c) * intensity, green(c) * intensity, blue(c) * intensity, 200);
+      beginShape();
+      vertex(ex, gB);
+      for (int s = 0; s <= N_SAMPLES; s++) {
+        float p  = (float)s / N_SAMPLES;
+        float v  = envValue(cluster, p);
+        vertex(ex + p * envW, gB - v * maxH);
       }
-      rect(x - cs / 2, y - cs / 2, cs, cs, 5);
-
-      if (!e.disabled) {
-        noStroke();
-        float s = cs * (0.4 + 0.6 * intensity);
-        fill(red(c) * intensity, green(c) * intensity, blue(c) * intensity);
-        rect(x - s / 2, y - s / 2, s, s, 3);
-      }
+      vertex(ex + envW, gB);
+      endShape(CLOSE);
     }
 
     if (e.disabled) {
       stroke(120, 80, 80); strokeWeight(1);
-      line(x - cs / 2, gT + 6, x + cs / 2, gB - 6);
+      line(ex - cs / 2, gT + 6, ex + cs / 2, gB - 6);
     }
   }
 
@@ -120,18 +124,42 @@ void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float
     noStroke();
   }
 
-  // Hover highlight around the transient_cluster cell.
+  // Hover highlight spanning the full envelope width on the cluster row.
   if (hoverEventIdx >= 0 && hoverEventIdx < events.size()) {
     Event he = events.get(hoverEventIdx);
     if (he.t >= pageStart && he.t < pageEnd) {
-      int clusterRow = csvCols.length - 1;
-      float hx = eventX(he, pageStart);
-      float hy = rowCenterY(clusterRow);
+      float hx      = eventX(he, pageStart);
+      float hEnvW   = max(he.dur, MIN_ENV_S) / PAGE_DURATION_S * (gR - gL);
+      float hNormR  = (eventNormRms != null) ? eventNormRms[he.rowIndex] : 1.0;
+      float hMaxH   = maxEnvH * hNormR;
       noFill();
       stroke(255, 255, 255, 200); strokeWeight(2);
-      rect(hx - cs / 2 - 4, hy - cs / 2 - 4, cs + 8, cs + 8, 7);
+      rect(hx - 4, gB - hMaxH - 4, hEnvW + 8, hMaxH + 8, 5);
       noStroke();
     }
+  }
+}
+
+// --- Stem playback labels ----------------------------------------------------
+
+void drawStemLabels() {
+  float lx = gridLeft();
+  float ly = 72;
+  textSize(13);
+  textAlign(LEFT, CENTER);
+  for (int i = 0; i < STEM_LABELS.length; i++) {
+    boolean active = (i == activeStem);
+    boolean exists = stemFiles != null && i < stemFiles.length
+                     && (i == 0 || (stemFiles[i].length() > 0
+                         && new File(dataPath(stemFiles[i])).exists()));
+    if (!exists) continue;
+    float bw = textWidth(STEM_LABELS[i]) + 16;
+    noStroke();
+    fill(active ? color(150, 150, 210, 230) : color(55, 55, 70, 200));
+    rect(lx, ly - 11, bw, 22, 5);
+    fill(active ? color(240) : color(155));
+    text(STEM_LABELS[i], lx + 8, ly);
+    lx += bw + 8;
   }
 }
 
@@ -260,12 +288,16 @@ void drawDragOverlay(float pageStart, float pageEnd) {
   if (dragEventIdx < 0) return;
   Event e = events.get(dragEventIdx);
   if (e.t < pageStart || e.t >= pageEnd) return;
-  float x  = eventX(e, pageStart);
-  float y  = rowCenterY(dragRow);
-  float cs = cellSize();
+  float gB   = gridBottom();
+  float gT   = gridTop();
+  float gL   = gridLeft(), gR = gridRight();
+  float ex   = eventX(e, pageStart);
+  float envW = max(e.dur, MIN_ENV_S) / PAGE_DURATION_S * (gR - gL);
+  float normR = (eventNormRms != null) ? eventNormRms[e.rowIndex] : 1.0;
+  float maxH  = (gB - gT) * 0.90 * normR;
   noFill();
   stroke(255, 230, 80); strokeWeight(2);
-  rect(x - cs / 2 - 5, y - cs / 2 - 5, cs + 10, cs + 10, 7);
+  rect(ex - 4, gB - maxH - 4, envW + 8, maxH + 8, 7);
   noStroke();
 }
 
@@ -301,7 +333,7 @@ void drawHUD(float now, int page, int eventsThisPage) {
   fill(200);
   textAlign(LEFT, TOP); textSize(14);
   String rateStr = (playbackRate != 1.0) ? "  [" + nf(playbackRate, 1, 2) + "x]" : "";
-  String state   = (sound.isPlaying() ? "" : "  [PAUSED]") + rateStr;
+  String state   = (sound.isPlaying() ? "" : "  [PAUSED]") + rateStr + (loopEnabled ? "  [LOOP]" : "");
 
   int segIdx = currentSegmentIndex(now);
   String segLabel = "";
@@ -324,7 +356,7 @@ void drawHUD(float now, int page, int eventsThisPage) {
   textAlign(RIGHT, TOP);
   String snapHint = gridSnapEnabled ? "snap:on" : "snap:off";
   text("space play/pause   ← → page   r start   q " + snapHint +
-       "   -/= speed   m midi   ctrl/cmd+s save", hintR, 24);
+       "   -/= speed   l loop   m midi   ctrl/cmd+s save", hintR, 24);
 
   boolean midiOk = (midiOut != null && midiOut.isOpen());
   String midiStatus = midiOk

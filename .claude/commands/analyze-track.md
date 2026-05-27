@@ -55,6 +55,19 @@ Destination: `processing/SynchronizerVis/data/`
 
 Use `cp` for each file. Show which files were copied.
 
+### 5b. Copy Demucs stem WAVs to the Processing sketch data folder
+Demucs stems live under `stems/htdemucs/<stem>/`. For each of the four stems
+(`drums`, `vocals`, `bass`, `other`), if the source WAV exists copy it:
+
+```
+stems/htdemucs/<stem>/drums.wav  →  processing/SynchronizerVis/data/<stem>_drums.wav
+stems/htdemucs/<stem>/vocals.wav →  processing/SynchronizerVis/data/<stem>_vocals.wav
+stems/htdemucs/<stem>/bass.wav   →  processing/SynchronizerVis/data/<stem>_bass.wav
+stems/htdemucs/<stem>/other.wav  →  processing/SynchronizerVis/data/<stem>_other.wav
+```
+
+Skip silently if a source file is absent. Show which files were copied.
+
 ### 6. Report summary
 - How many transient events were detected (count rows in the CSV, minus the header).
 - Which sidecar files were produced.
