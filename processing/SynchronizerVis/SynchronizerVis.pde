@@ -65,7 +65,7 @@ import java.io.File;
 
 // --- Track / file config (change only TRACK to switch tracks) ----------------
 
-final String TRACK = "04_Krib";
+final String TRACK = "06_Dropp";
 
 final String AUDIO_FILE    = TRACK + "/track.wav";
 final String CSV_FILE      = TRACK + "/events.csv";
@@ -188,6 +188,7 @@ float[] eventNormRms;        // quantile-normalised RMS per event (indexed by ro
 
 int     activeK    = 2;      // which k is active for display/MIDI (MULTI_K_MIN..MULTI_K_MAX_FIXED)
 int[][] kClusters;           // kClusters[k-MULTI_K_MIN][eventIdx]
+boolean midiEnergyScale = true;  // scale CC output by quantile-normalised RMS
 
 // --- Data classes ------------------------------------------------------------
 

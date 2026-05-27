@@ -155,6 +155,15 @@ void drawAdsrPanel(float now) {
   text("k =", pL + 8, 8);
   drawKSelector();
 
+  // RMS-scale toggle — top-right corner of the panel header.
+  float bx = pL + pW - 58; float by = 8; float bW = 52; float bH = 16;
+  noStroke();
+  fill(midiEnergyScale ? color(55, 80, 55) : 30);
+  rect(bx, by - bH * 0.5, bW, bH, 3);
+  textAlign(CENTER, CENTER); textSize(10);
+  fill(midiEnergyScale ? color(160, 230, 160) : color(75));
+  text("RMS scale", bx + bW * 0.5, by);
+
   for (int c = 0; c < N_TRANSIENT_CLUSTERS; c++) {
     drawPanelCluster(c, now);
     if (c < N_TRANSIENT_CLUSTERS - 1) {
@@ -325,6 +334,13 @@ void drawPanelMeter(int c) {
 
 void panelMousePressed() {
   float mx = mouseX, my = mouseY;
+
+  // RMS-scale toggle.
+  float bx = panelLeft() + panelW() - 58; float by = 8; float bW = 52; float bH = 16;
+  if (abs(my - by) <= bH * 0.5 + 2 && mx >= bx && mx <= bx + bW) {
+    midiEnergyScale = !midiEnergyScale;
+    return;
+  }
 
   // K-selector: hit zone ±10px from strip centre Y.
   float ky = panelKSelectorY();
