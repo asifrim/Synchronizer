@@ -30,18 +30,23 @@
 //                 sit just off the ticks)
 //   - / =         slow down / speed up (0.25x steps, range 0.25x–2.0x; alters pitch)
 //   m             toggle MIDI output on/off
+//   d             delete / restore selected event (toggles disabled; excluded from saved CSV)
+//   Esc           deselect event
 //   0-9           reassign hovered event's cluster (digits >= activeK ignored)
 //   ctrl/cmd+s    save event edits to <basename>_v<N>.csv
 //
 // Mouse:
-//   left-click on an event        toggle disabled (excluded from saved CSV)
-//   shift+left-click on an event  preview: plays from onset for its duration, then stops
-//   right-click + drag on cell    drag up = higher bucket value
-//                                 (drag down = lower), per-row bucket ladder
-//   right panel: drag A / D knobs       reshape envelope per cluster
-//   right panel: click LIN / EXP        toggle attack or decay curve shape
-//   right panel: click k-selector       switch the active number of clusters
-//   right panel: click "RMS scale"      toggle quantile RMS scaling for MIDI
+//   left-click on an event            select (amber outline); click again or click
+//                                     empty space to deselect
+//   left-drag horizontally on event   shift event time left/right; Ctrl+S persists
+//   left-drag vertically on event     reassign cluster up/down within active k
+//   shift+left-click on an event      preview: plays from onset for its duration, then stops
+//   right-click + drag on cell        drag up = higher bucket value
+//                                     (drag down = lower), per-row bucket ladder
+//   right panel: drag A / D knobs     reshape envelope per cluster
+//   right panel: click LIN / EXP      toggle attack or decay curve shape
+//   right panel: click k-selector     switch the active number of clusters
+//   right panel: click "RMS scale"    toggle quantile RMS scaling for MIDI
 //
 // MIDI output (drives TouchDesigner): as the playhead crosses each transient,
 // an AD envelope is emitted as a 7-bit MIDI CC. Each transient_cluster has
@@ -69,7 +74,7 @@ import java.io.File;
 
 // --- Track / file config (change only TRACK to switch tracks) ----------------
 
-final String TRACK = "06_Dropp";
+final String TRACK = "05_Tilapia";
 
 final String AUDIO_FILE    = TRACK + "/track.wav";
 final String CSV_FILE      = TRACK + "/events.csv";
@@ -91,7 +96,7 @@ final String STEM_OTHER_FILE  = TRACK + "/other.wav";
 
 // --- Analysis / display config -----------------------------------------------
 
-final int   N_TIMBRE_CLUSTERS    = 7;
+final int   N_TIMBRE_CLUSTERS    = 6;
 final int   N_TRANSIENT_CLUSTERS = 8;  // always 8 panels; activeK controls how many are live
 final int   MULTI_K_MIN          = 2;
 final int   MULTI_K_MAX_FIXED    = 8;
@@ -167,11 +172,19 @@ color[][] palettes;
 
 // --- Interaction state -------------------------------------------------------
 
-int   hoverEventIdx   = -1;   // updated by mouseMoved(); used for digit-key reassign
+int   hoverEventIdx    = -1;   // updated by mouseMoved(); used for digit-key reassign
+int   selectedEventIdx = -1;   // left-click selects; 'd' deletes; Esc clears
 int   dragEventIdx    = -1;
 int   dragRow         = -1;
 int   dragStartBucket = -1;
 float dragStartY      = 0;
+int   timeDragEventIdx   = -1;  // left-drag state (time-shift or cluster-change)
+float timeDragStartX     = 0;
+float timeDragStartY     = 0;
+float timeDragOrigT      = 0;
+int   timeDragStartBucket = -1;
+int   timeDragMode       = 0;   // 0=undecided, 1=horizontal/time, 2=vertical/cluster
+boolean timeDragMoved    = false;
 int   disabledCount   = 0;    // maintained on toggle; read by HUD
 int   cachedSegmentIdx = -1;  // current-segment cache; reused while playhead stays in range
 

@@ -97,7 +97,7 @@ void mousePressed() {
   if (waveT >= 0) { seek(waveT); return; }
 
   int eventIdx = findEventNear(mouseX, mouseY);
-  if (eventIdx < 0) return;
+  if (eventIdx < 0) { selectedEventIdx = -1; return; }
 
   if (mouseButton == LEFT) {
     Event e = events.get(eventIdx);
@@ -106,8 +106,14 @@ void mousePressed() {
       sound.jump(e.origT);
       sound.rate(playbackRate);
     } else {
-      e.disabled = !e.disabled;
-      disabledCount += e.disabled ? 1 : -1;
+      // Record press; decide click vs drag in mouseDragged / mouseReleased.
+      timeDragEventIdx    = eventIdx;
+      timeDragStartX      = mouseX;
+      timeDragStartY      = mouseY;
+      timeDragOrigT       = e.origT;
+      timeDragStartBucket = e.bucketIdx[csvCols.length - 1];
+      timeDragMode        = 0;
+      timeDragMoved       = false;
     }
   } else if (mouseButton == RIGHT) {
     int row = rowAt(mouseY);
@@ -123,6 +129,30 @@ void mousePressed() {
 
 void mouseDragged() {
   if (knobDragCluster >= 0) { panelMouseDragged(); return; }
+
+  if (timeDragEventIdx >= 0) {
+    float deltaX = mouseX - timeDragStartX;
+    float deltaY = mouseY - timeDragStartY;
+    // Lock direction on first move past threshold.
+    if (timeDragMode == 0 && (abs(deltaX) > 3 || abs(deltaY) > 3)) {
+      timeDragMode  = (abs(deltaY) > abs(deltaX)) ? 2 : 1;
+      timeDragMoved = true;
+    }
+    if (timeDragMode == 1) {
+      float deltaT = deltaX / (gridRight() - gridLeft()) * PAGE_DURATION_S;
+      float newT   = constrain(timeDragOrigT + deltaT, 0, trackDuration - 0.01);
+      Event e = events.get(timeDragEventIdx);
+      e.t     = newT;
+      e.origT = newT;
+    } else if (timeDragMode == 2) {
+      int clusterRow = csvCols.length - 1;
+      int steps      = (int)((timeDragStartY - mouseY) / DRAG_PIXELS_PER_STEP);
+      events.get(timeDragEventIdx).bucketIdx[clusterRow] =
+        constrain(timeDragStartBucket + steps, 0, activeK - 1);
+    }
+    return;
+  }
+
   if (dragEventIdx < 0) return;
   float deltaY = dragStartY - mouseY;
   int steps    = (int)(deltaY / DRAG_PIXELS_PER_STEP);
@@ -137,6 +167,21 @@ void mouseReleased() {
     saveAdsr();
     return;
   }
+
+  if (timeDragEventIdx >= 0) {
+    if (!timeDragMoved) {
+      // Pure click — select (or deselect if already selected).
+      selectedEventIdx = (selectedEventIdx == timeDragEventIdx) ? -1 : timeDragEventIdx;
+    } else {
+      // Committed drag — write new start_time back to eventsTable so Ctrl+S persists it.
+      Event e = events.get(timeDragEventIdx);
+      eventsTable.getRow(e.rowIndex).setString("start_time", nf(e.t, 0, 6));
+    }
+    timeDragEventIdx = -1;
+    timeDragMoved    = false;
+    return;
+  }
+
   dragEventIdx = -1;
   dragRow      = -1;
 }
@@ -172,6 +217,17 @@ void keyPressed() {
     }
   }
   if (key == 'm' || key == 'M') midiEnabled = !midiEnabled;
+  if (key == ESC) {
+    // Intercept Escape so Processing doesn't close the sketch.
+    key = 0;
+    selectedEventIdx = -1;
+  }
+  if ((key == 'd' || key == 'D') && selectedEventIdx >= 0) {
+    Event e = events.get(selectedEventIdx);
+    e.disabled = !e.disabled;
+    disabledCount += e.disabled ? 1 : -1;
+    selectedEventIdx = -1;
+  }
   // Digit keys: reassign hovered event's transient_cluster. Only digits
   // within the active k make sense — clusters >= activeK are inert.
   if (key >= '0' && key <= '9' && hoverEventIdx >= 0) {

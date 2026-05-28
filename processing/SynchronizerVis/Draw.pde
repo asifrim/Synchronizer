@@ -158,6 +158,21 @@ void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float
     noStroke();
   }
 
+  // Selection highlight — solid amber outline, drawn before hover so hover sits on top.
+  if (selectedEventIdx >= 0 && selectedEventIdx < events.size()) {
+    Event se = events.get(selectedEventIdx);
+    if (se.t >= pageStart && se.t < pageEnd) {
+      float sx    = eventX(se, pageStart);
+      float sEnvW = max(se.dur, MIN_ENV_S) / PAGE_DURATION_S * (gR - gL);
+      float sNormR = (eventNormRms != null) ? eventNormRms[se.rowIndex] : 1.0;
+      float sMaxH  = maxEnvH * sNormR;
+      noFill();
+      stroke(255, 200, 50, 230); strokeWeight(2);
+      rect(sx - 5, gB - sMaxH - 5, sEnvW + 10, sMaxH + 10, 5);
+      noStroke();
+    }
+  }
+
   // Hover highlight spanning the full envelope width on the cluster row.
   if (hoverEventIdx >= 0 && hoverEventIdx < events.size()) {
     Event he = events.get(hoverEventIdx);
