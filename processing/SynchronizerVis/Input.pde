@@ -29,6 +29,27 @@ void switchToStem(int idx) {
   sound.rate(playbackRate);
   if (!wasPlaying) sound.pause();
   activeStem = idx;
+
+  // Switch waveform visualization to the selected stem (fall back to mix if absent).
+  float[] sw = (allStemWavePeaks != null && idx < allStemWavePeaks.length)
+               ? allStemWavePeaks[idx] : null;
+  wavePeaks = (sw != null) ? sw : allStemWavePeaks[0];
+  waveformWindowDur = (wavePeaks.length > 0) ? trackDuration / wavePeaks.length : 1.0 / 44100;
+  buildWaveformBuffer();
+  gridBgPage = -1;
+}
+
+// --- Waveform thumbnail hit-testing ------------------------------------------
+
+// Returns the track time corresponding to a click in the waveform strip,
+// or -1 if the click is outside the strip.
+float waveformTimeAt(float mx, float my) {
+  float wLeft = 40;
+  float wTop  = height - 160;
+  float wW    = panelLeft() - 60;
+  float wH    = 110;
+  if (my < wTop || my > wTop + wH || mx < wLeft || mx > wLeft + wW) return -1;
+  return constrain((mx - wLeft) / wW * trackDuration, 0, trackDuration - 0.05);
 }
 
 // --- Event hit-testing -------------------------------------------------------
@@ -71,6 +92,9 @@ void mousePressed() {
 
   int stemIdx = findStemLabelAt(mouseX, mouseY);
   if (stemIdx >= 0) { switchToStem(stemIdx); return; }
+
+  float waveT = waveformTimeAt(mouseX, mouseY);
+  if (waveT >= 0) { seek(waveT); return; }
 
   int eventIdx = findEventNear(mouseX, mouseY);
   if (eventIdx < 0) return;

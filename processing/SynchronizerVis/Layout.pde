@@ -76,9 +76,9 @@ float panelCurveR()        { return panelLeft() + 136; }
 float panelCurveT(int c)   { return panelClusterY(c) + 20; }
 float panelCurveB(int c)   { return panelClusterY(c) + 112; }
 
-// Rotary knob positions: two columns in the right portion.
-// col 0 = Attack, col 1 = Decay
-float panelKnobCX(int col) { return panelLeft() + 192 + col * 96; }
+// Rotary knob positions: three columns in the right portion.
+// col 0 = Attack, col 1 = Decay, col 2 = Timing offset
+float panelKnobCX(int col) { return panelLeft() + 152 + col * 68; }
 float panelKnobCY(int c)   { return panelClusterY(c) + 55; }
 final float KNOB_RADIUS    = 16;
 

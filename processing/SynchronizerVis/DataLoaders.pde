@@ -123,6 +123,20 @@ color colorForMidi(int midi) {
   return chromaColors[pc];
 }
 
+void loadStemWavePeaks() {
+  allStemWavePeaks = new float[STEM_LABELS.length][];
+  allStemWavePeaks[0] = wavePeaks;  // mix waveform already loaded
+  for (int i = 1; i < STEM_LABELS.length; i++) {
+    if (stemWaveFiles == null || i >= stemWaveFiles.length) continue;
+    File f = new File(dataPath(stemWaveFiles[i]));
+    if (!f.exists()) { allStemWavePeaks[i] = null; continue; }
+    Table t = loadTable(stemWaveFiles[i], "header");
+    int n = t.getRowCount();
+    allStemWavePeaks[i] = new float[n];
+    for (int j = 0; j < n; j++) allStemWavePeaks[i][j] = t.getFloat(j, "peak");
+  }
+}
+
 void buildWaveformBuffer() {
   // Width matches drawWaveform: wLeft=40, wRight=panelLeft()-20 → wW=panelLeft()-60.
   int wW = (int)(panelLeft() - 60);

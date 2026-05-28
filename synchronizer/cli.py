@@ -139,6 +139,13 @@ def main(argv: list[str] | None = None) -> int:
     else:
         write_waveform(original_input, waveform_path)
 
+    # When the drum stem was separated, also write its waveform so the
+    # Processing sketch can switch to it when the user solos that stem.
+    if args.drums:
+        drum_wave_path = sidecar("drums_waveform.csv")
+        write_waveform(in_path, drum_wave_path)
+        print(f"drums waveform -> {drum_wave_path}")
+
     print(f"{in_path.name}: {len(classified)} transients -> {csv_path}")
     print(f"transient clusters: k={chosen_k} (silhouette={silhouette:.3f})")
     print(f"waveform -> {waveform_path}")
@@ -194,6 +201,9 @@ def main(argv: list[str] | None = None) -> int:
             note_path = sidecar(f"{stem_name}_melody.csv")
             write_notes(notes, note_path)
             print(f"melody/{stem_name} -> {note_path} ({len(notes)} notes)")
+            wave_path = sidecar(f"{stem_name}_waveform.csv")
+            write_waveform(stem_paths[stem_name], wave_path)
+            print(f"{stem_name} waveform -> {wave_path}")
 
     return 0
 

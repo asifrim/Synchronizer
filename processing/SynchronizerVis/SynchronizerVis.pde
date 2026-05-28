@@ -122,7 +122,9 @@ final boolean RELEASE_ON_PAUSE = false;  // true = send 0s on pause instead of h
 // --- Stem playback -----------------------------------------------------------
 
 final String[] STEM_LABELS = {"Mix", "Percussion", "Vocals", "Bass", "Other"};
-String[] stemFiles;   // parallel to STEM_LABELS; set in setup()
+String[] stemFiles;          // parallel to STEM_LABELS; set in setup()
+String[] stemWaveFiles;      // waveform CSV paths parallel to STEM_LABELS; set in setup()
+float[][] allStemWavePeaks;  // per-stem waveform peaks; null entries if CSV absent
 int      activeStem = 0;
 
 // --- Audio / data state ------------------------------------------------------
@@ -182,6 +184,8 @@ int    savedNoticeUntil = 0;
 
 float[]   attackFrac, decayFrac;
 boolean[] attackExp, decayExp;   // true = exponential curve shape
+float[]   clusterOffsetMs;       // per-cluster trigger-time offset, -100..+100 ms
+boolean[] clusterEnabled;        // per-cluster on/off; false = no MIDI, greyed in grid
 float[]   ccVal;                 // live envelope value per cluster, 0..1
 int[]     lastSent;              // last quantized CC value sent (-1 = not yet sent)
 // Envelope shape only changes when a knob/toggle moves, but it's sampled
@@ -288,12 +292,20 @@ void setup() {
   buildChromaColors();
 
   stemFiles = new String[]{AUDIO_FILE, STEM_DRUMS_FILE, STEM_VOCALS_FILE, STEM_BASS_FILE, STEM_OTHER_FILE};
+  stemWaveFiles = new String[]{
+    WAVE_FILE,
+    TRACK + "/drums_waveform.csv",
+    TRACK + "/vocals_waveform.csv",
+    TRACK + "/bass_waveform.csv",
+    TRACK + "/other_waveform.csv",
+  };
 
   sound = new SoundFile(this, AUDIO_FILE);
   trackDuration    = sound.duration();
   waveformWindowDur = (wavePeaks.length > 0) ? trackDuration / wavePeaks.length : 1.0 / 44100;
 
   buildWaveformBuffer();
+  loadStemWavePeaks();
   sound.rate(playbackRate);
 
   initAdsr();

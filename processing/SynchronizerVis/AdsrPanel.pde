@@ -11,18 +11,22 @@
 
 void initAdsr() {
   int n = N_TRANSIENT_CLUSTERS;
-  attackFrac     = new float[n];
-  decayFrac      = new float[n];
-  attackExp      = new boolean[n];
-  decayExp       = new boolean[n];
-  ccVal          = new float[n];
-  lastSent       = new int[n];
-  envCurveCache  = new float[n][N_ENV_SAMPLES + 1];
+  attackFrac      = new float[n];
+  decayFrac       = new float[n];
+  attackExp       = new boolean[n];
+  decayExp        = new boolean[n];
+  clusterOffsetMs = new float[n];
+  clusterEnabled  = new boolean[n];
+  ccVal           = new float[n];
+  lastSent        = new int[n];
+  envCurveCache   = new float[n][N_ENV_SAMPLES + 1];
   for (int i = 0; i < n; i++) {
-    attackFrac[i] = 0.08 + 0.04 * (i % 4);
-    decayFrac[i]  = 0.70 - 0.05 * (i % 4);
-    attackExp[i]  = false;
-    decayExp[i]   = false;
+    attackFrac[i]      = 0.08 + 0.04 * (i % 4);
+    decayFrac[i]       = 0.70 - 0.05 * (i % 4);
+    attackExp[i]       = false;
+    decayExp[i]        = false;
+    clusterOffsetMs[i] = 0;
+    clusterEnabled[i]  = true;
     clampAdsr(i);
     ccVal[i]    = 0;
     lastSent[i] = -1;
@@ -53,11 +57,13 @@ void loadAdsr() {
   File f = new File(dataPath(adsrFileName()));
   if (!f.exists()) return;
   Table t = loadTable(adsrFileName(), "header");
-  boolean hasDecay = false, hasExp = false;
+  boolean hasDecay = false, hasExp = false, hasOffset = false, hasEnabled = false;
   for (int i = 0; i < t.getColumnCount(); i++) {
     String col = t.getColumnTitle(i);
-    if (col.equals("decay"))      hasDecay = true;
-    if (col.equals("attack_exp")) hasExp   = true;
+    if (col.equals("decay"))      hasDecay   = true;
+    if (col.equals("attack_exp")) hasExp     = true;
+    if (col.equals("offset_ms"))  hasOffset  = true;
+    if (col.equals("enabled"))    hasEnabled = true;
   }
   for (TableRow r : t.rows()) {
     int c = r.getInt("cluster");
@@ -68,6 +74,8 @@ void loadAdsr() {
       attackExp[c] = r.getInt("attack_exp") != 0;
       decayExp[c]  = r.getInt("decay_exp")  != 0;
     }
+    if (hasOffset)  clusterOffsetMs[c] = constrain(r.getFloat("offset_ms"), -100, 100);
+    if (hasEnabled) clusterEnabled[c]  = r.getInt("enabled") != 0;
     clampAdsr(c);
   }
 }
@@ -79,13 +87,17 @@ void saveAdsr() {
   out.addColumn("decay");
   out.addColumn("attack_exp");
   out.addColumn("decay_exp");
+  out.addColumn("offset_ms");
+  out.addColumn("enabled");
   for (int c = 0; c < N_TRANSIENT_CLUSTERS; c++) {
     TableRow row = out.addRow();
-    row.setInt("cluster",    c);
-    row.setFloat("attack",   attackFrac[c]);
-    row.setFloat("decay",    decayFrac[c]);
-    row.setInt("attack_exp", attackExp[c] ? 1 : 0);
-    row.setInt("decay_exp",  decayExp[c]  ? 1 : 0);
+    row.setInt("cluster",     c);
+    row.setFloat("attack",    attackFrac[c]);
+    row.setFloat("decay",     decayFrac[c]);
+    row.setInt("attack_exp",  attackExp[c] ? 1 : 0);
+    row.setInt("decay_exp",   decayExp[c]  ? 1 : 0);
+    row.setFloat("offset_ms", clusterOffsetMs[c]);
+    row.setInt("enabled",     clusterEnabled[c] ? 1 : 0);
   }
   saveTable(out, dataPath(adsrFileName()));
   savedNotice      = "saved " + adsrFileName();
@@ -176,31 +188,42 @@ void drawAdsrPanel(float now) {
 
 void drawPanelCluster(int c, float now) {
   boolean inactive = (c >= activeK);
+  boolean disabled = !clusterEnabled[c];
   float pL  = panelLeft();
   float cy  = panelClusterY(c);
-  color col = inactive ? color(45) : palettes[0][c];
+  color col = (inactive || disabled) ? color(45) : palettes[0][c];
 
   // Header strip.
   noStroke();
-  fill(inactive ? 20 : red(col) * 0.20, inactive ? 20 : green(col) * 0.20, inactive ? 20 : blue(col) * 0.20);
+  fill(inactive || disabled ? 20 : red(col) * 0.20,
+       inactive || disabled ? 20 : green(col) * 0.20,
+       inactive || disabled ? 20 : blue(col) * 0.20);
   rect(pL + 4, cy + 2, panelW() - 8, 17, 3);
-  fill(inactive ? 55 : col);
+  fill(inactive || disabled ? 55 : col);
   textAlign(LEFT, CENTER); textSize(10);
   text("cluster " + c + "  CC " + (BASE_CC + c), pL + 10, cy + 10);
 
   drawPanelEnvCurve(c, now);
   drawKnob(c, 0, "A", attackFrac[c]);
   drawKnob(c, 1, "D", decayFrac[c]);
+  drawOffsetKnob(c);
   drawShapeToggle(c, 0, attackExp[c]);
   drawShapeToggle(c, 1, decayExp[c]);
   drawPanelMeter(c);
 
   // Grey-out overlay for clusters outside the active k range.
   if (inactive) {
-    noStroke();
-    fill(14, 16, 24, 170);
+    noStroke(); fill(14, 16, 24, 170);
     rect(pL + 2, cy + 1, panelW() - 4, panelClusterH() - 2, 2);
   }
+  // Dim overlay for disabled-but-active clusters.
+  if (disabled && !inactive) {
+    noStroke(); fill(14, 16, 24, 155);
+    rect(pL + 2, cy + 1, panelW() - 4, panelClusterH() - 2, 2);
+  }
+
+  // ON/OFF button always drawn on top of any overlay.
+  drawEnableButton(c);
 }
 
 void drawPanelEnvCurve(int c, float now) {
@@ -244,13 +267,14 @@ void drawPanelEnvCurve(int c, float now) {
   text("A", (cL + xA) * 0.5, cT);
   text("D", (xA + cR) * 0.5, cT);
 
-  // Live playhead dot.
+  // Live playhead dot — uses the same shifted trigger time as MIDI.
   int clusterRow = csvCols.length - 1;
   float maxPhase = -1;
   for (Event e : events) {
     if (e.disabled || e.bucketIdx[clusterRow] != c) continue;
-    float envLen = max(e.dur, MIN_ENV_S);
-    float p = (now - e.origT) / envLen;
+    float triggerT = e.origT + clusterOffsetMs[c] / 1000.0;
+    float envLen   = max(e.dur, MIN_ENV_S);
+    float p        = (now - triggerT) / envLen;
     if (p >= 0 && p < 1 && p > maxPhase) maxPhase = p;
   }
   if (maxPhase >= 0) {
@@ -304,6 +328,76 @@ void drawKnob(int c, int param, String label, float value) {
   fill(active ? color(210) : color(100));
   textAlign(CENTER, TOP); textSize(9);
   text(label + " " + nf(value, 1, 2), cx, cy + r + 3);
+}
+
+// ON/OFF toggle button — sits in the top-right corner of the header strip,
+// drawn after overlays so it is always readable and clickable.
+void drawEnableButton(int c) {
+  boolean on = clusterEnabled[c];
+  float pL  = panelLeft();
+  float cy  = panelClusterY(c);
+  float bx  = pL + panelW() - 36;
+  float by  = cy + 3;
+  float bW  = 28; float bH = 13;
+  color col = palettes[0][c];
+
+  noStroke();
+  fill(on ? color(red(col) * 0.45, green(col) * 0.45, blue(col) * 0.45) : color(28));
+  rect(bx, by, bW, bH, 3);
+  textAlign(CENTER, CENTER); textSize(8);
+  fill(on ? col : color(65));
+  text(on ? "ON" : "OFF", bx + bW * 0.5, by + bH * 0.5);
+  noStroke();
+}
+
+// Draw the timing-offset knob (col 2). Centred at 0 ms; ±100 ms range.
+// The arc sweeps from 12 o'clock (centre/zero) outward in both directions
+// so negative offsets arc left and positive arc right.
+void drawOffsetKnob(int c) {
+  float val  = clusterOffsetMs[c];
+  float norm = (val + 100.0) / 200.0;   // -100..+100 ms → 0..1
+  float cx   = panelKnobCX(2);
+  float cy   = panelKnobCY(c);
+  float r    = KNOB_RADIUS;
+  color col  = palettes[0][c];
+  boolean active = (knobDragCluster == c && knobDragParam == 2);
+
+  float arcStart = radians(135);
+  float arcSweep = radians(270);
+
+  // Background track.
+  noFill(); stroke(38); strokeWeight(2.5);
+  arc(cx, cy, r * 2, r * 2, arcStart, arcStart + arcSweep, OPEN);
+
+  // Centre reference tick at 12 o'clock (norm == 0.5).
+  float midAngle = arcStart + 0.5 * arcSweep;
+  stroke(55); strokeWeight(1);
+  line(cx + cos(midAngle) * (r - 2), cy + sin(midAngle) * (r - 2),
+       cx + cos(midAngle) * (r + 3), cy + sin(midAngle) * (r + 3));
+
+  // Value arc from centre outward.
+  if (abs(val) > 0.5) {
+    stroke(active ? color(255) : col); strokeWeight(2.5);
+    float fromA = midAngle;
+    float toA   = arcStart + norm * arcSweep;
+    if (norm < 0.5) arc(cx, cy, r * 2, r * 2, toA, fromA, OPEN);
+    else            arc(cx, cy, r * 2, r * 2, fromA, toA, OPEN);
+  }
+
+  // Indicator dot.
+  float angle = arcStart + norm * arcSweep;
+  noStroke();
+  fill(active ? color(255) : color(220, 225, 240));
+  ellipse(cx + cos(angle) * (r - 4), cy + sin(angle) * (r - 4), 5, 5);
+
+  // Centre cap.
+  fill(22); ellipse(cx, cy, r * 0.7, r * 0.7);
+
+  // Label.
+  String lbl = (val >= 0 ? "+" : "") + nf(val, 1, 0) + "ms";
+  fill(active ? color(210) : color(100));
+  textAlign(CENTER, TOP); textSize(9);
+  text("T " + lbl, cx, cy + r + 3);
 }
 
 // Draw a single LIN/EXP shape toggle below the knob. Click to cycle.
@@ -364,19 +458,32 @@ void panelMousePressed() {
     }
   }
 
-  // Knobs and toggles per cluster.
+  // Knobs, toggles, and enable button per cluster.
   for (int c = 0; c < N_TRANSIENT_CLUSTERS; c++) {
     float kcy = panelKnobCY(c);
     float tcy = panelToggleCY(c);
 
+    // ON/OFF enable button — top-right of the header strip.
+    float ebx = panelLeft() + panelW() - 36;
+    float eby = panelClusterY(c) + 3;
+    float ebW = 28; float ebH = 13;
+    if (mx >= ebx && mx <= ebx + ebW && my >= eby && my <= eby + ebH) {
+      clusterEnabled[c] = !clusterEnabled[c];
+      if (!clusterEnabled[c]) for (int i = 0; i < N_TRANSIENT_CLUSTERS; i++) lastSent[i] = -1;
+      saveAdsr();
+      return;
+    }
+
     // Rotary knobs — hit zone: circle of radius KNOB_RADIUS + 6.
-    for (int param = 0; param < 2; param++) {
+    for (int param = 0; param < 3; param++) {
       float kcx = panelKnobCX(param);
       if (dist(mx, my, kcx, kcy) <= KNOB_RADIUS + 6) {
         knobDragCluster    = c;
         knobDragParam      = param;
         knobDragStartY     = my;
-        knobDragStartValue = (param == 0) ? attackFrac[c] : decayFrac[c];
+        knobDragStartValue = (param == 0) ? attackFrac[c]
+                           : (param == 1) ? decayFrac[c]
+                           :                clusterOffsetMs[c];
         return;
       }
     }
@@ -398,12 +505,17 @@ void panelMousePressed() {
 
 void panelMouseDragged() {
   if (knobDragCluster < 0) return;
-  // Drag up = increase, down = decrease. 180px = full 0→1 range.
   float delta = (knobDragStartY - mouseY) / 180.0;
-  float v = knobDragStartValue + delta;
-  if (knobDragParam == 0) attackFrac[knobDragCluster] = v;
-  else                    decayFrac[knobDragCluster]  = v;
-  clampAdsr(knobDragCluster);
-  rebuildEnvCache(knobDragCluster);
-  for (int i = 0; i < N_TRANSIENT_CLUSTERS; i++) lastSent[i] = -1;
+  if (knobDragParam == 2) {
+    // 180 px = 200 ms full range; start value stored in ms.
+    clusterOffsetMs[knobDragCluster] = constrain(knobDragStartValue + delta * 200.0, -100, 100);
+  } else {
+    // A / D knobs: 180 px = full 0→1 range.
+    float v = knobDragStartValue + delta;
+    if (knobDragParam == 0) attackFrac[knobDragCluster] = v;
+    else                    decayFrac[knobDragCluster]  = v;
+    clampAdsr(knobDragCluster);
+    rebuildEnvCache(knobDragCluster);
+    for (int i = 0; i < N_TRANSIENT_CLUSTERS; i++) lastSent[i] = -1;
+  }
 }

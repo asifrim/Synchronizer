@@ -34,11 +34,15 @@ void updateMidi(float now) {
     int clusterRow = csvCols.length - 1;
     for (Event e : events) {
       if (e.disabled) continue;
-      float envLen = max(e.dur, MIN_ENV_S);
-      float p = (now - e.origT) / envLen;
-      if (p < 0 || p >= 1) continue;
       int c = e.bucketIdx[clusterRow];
       if (c < 0 || c >= nc || c >= activeK) continue;
+      if (!clusterEnabled[c]) continue;
+      // Shift the transient's trigger time by the cluster's timing offset.
+      // The envelope shape and duration are unchanged; it just fires earlier/later.
+      float triggerT = e.origT + clusterOffsetMs[c] / 1000.0;
+      float envLen   = max(e.dur, MIN_ENV_S);
+      float p        = (now - triggerT) / envLen;
+      if (p < 0 || p >= 1) continue;
       float v = envValue(c, p) * (midiEnergyScale ? eventNormRms[e.rowIndex] : 1.0);
       if (v > ccVal[c]) ccVal[c] = v;
     }

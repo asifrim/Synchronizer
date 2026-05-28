@@ -106,28 +106,33 @@ void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float
   float maxEnvH    = (gB - gT) * 0.90;
 
   for (Event e : pageEvents) {
-    float ex  = eventX(e, pageStart);
-    float age = now - e.t;
+    int   cluster  = max(0, e.bucketIdx[clusterRow]);
+    float offsetS  = clusterOffsetMs[cluster] / 1000.0;
+    float ex  = gridLeft() + (e.t + offsetS - pageStart) / PAGE_DURATION_S * (gridRight() - gridLeft());
+    float age = now - (e.t + offsetS);
     float intensity;
     if (e.disabled)       intensity = 0.0;
     else if (age < 0)     intensity = EVENT_PRE_INTENSITY;
     else if (age > e.dur) intensity = EVENT_BASE_INTENSITY;
     else                  intensity = EVENT_BASE_INTENSITY + EVENT_PEAK_BOOST * pow(1 - age / e.dur, EVENT_FALLOFF_EXP);
-
-    int   cluster  = max(0, e.bucketIdx[clusterRow]);
     float normRms  = (eventNormRms != null) ? eventNormRms[e.rowIndex] : 1.0;
     float envLen   = max(e.dur, MIN_ENV_S);
     float envW     = envLen / PAGE_DURATION_S * (gR - gL);
     float[] curve  = envCurveCache[cluster];
 
+    boolean clusterOff = !clusterEnabled[cluster];
     for (int row = 0; row < nRows; row++) {
       int b = e.bucketIdx[row];
       if (b < 0 || e.disabled) continue;
-      color c    = palettes[row][b];
       float maxH = maxEnvH * normRms;
 
       noStroke();
-      fill(red(c) * intensity, green(c) * intensity, blue(c) * intensity, 200);
+      if (clusterOff) {
+        fill(50, 52, 58, 90);
+      } else {
+        color c = palettes[row][b];
+        fill(red(c) * intensity, green(c) * intensity, blue(c) * intensity, 200);
+      }
       beginShape();
       vertex(ex, gB);
       for (int s = 0; s <= N_ENV_SAMPLES; s++) {
