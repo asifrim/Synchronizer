@@ -16,19 +16,28 @@ import numpy as np
 DEFAULT_HOP_LENGTH = 64  # ~1.5 ms windows at 44.1 kHz — fine enough for pixel-level display
 
 
-def write_waveform(audio_path: str | Path, out_path: str | Path, hop_length: int = DEFAULT_HOP_LENGTH) -> None:
+def write_waveform(
+    audio_path: str | Path,
+    out_path: str | Path,
+    hop_length: int = DEFAULT_HOP_LENGTH,
+    y: np.ndarray | None = None,
+    sr: int | None = None,
+) -> None:
     """Write a two-column CSV (time, peak) at native hop resolution.
 
     ``peak`` is max(|sample|) within each hop window. With the default hop of
     64 samples at 44.1 kHz this yields ~690 windows/second — enough for the
     Processing sketch to render one or more real peak values per screen pixel
     even when zoomed into a 4-second page window.
+
+    Pass ``y``/``sr`` to skip the load when the caller already has the audio
+    in memory (must be mono, native rate).
     """
-    audio_path = Path(audio_path)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    y, sr = librosa.load(str(audio_path), sr=None, mono=True)
+    if y is None or sr is None:
+        y, sr = librosa.load(str(Path(audio_path)), sr=None, mono=True)
     duration = len(y) / sr
 
     hop = max(1, hop_length)

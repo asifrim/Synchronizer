@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import math
 from pathlib import Path
 
 from .classify import ClassifiedTransient
@@ -43,7 +44,7 @@ def write_csv(rows: list[ClassifiedTransient], path: str | Path) -> None:
                 f"{t.rolloff_hz:.3f}",
                 f"{t.bandwidth_hz:.3f}",
                 f"{t.zcr:.6f}",
-                "" if t.pitch_hz != t.pitch_hz else f"{t.pitch_hz:.3f}",  # NaN -> empty
+                "" if math.isnan(t.pitch_hz) else f"{t.pitch_hz:.3f}",  # NaN -> empty
                 f"{t.pitch_confidence:.4f}",
                 *[f"{v:.6f}" for v in t.mfcc],
                 c.pitch_bucket,

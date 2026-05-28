@@ -53,8 +53,19 @@ class MixAnalysis:
     hop: int = HOP_LENGTH
 
 
-def analyze_mix(audio_path: str | Path, hop: int = HOP_LENGTH) -> MixAnalysis:
-    y, sr = librosa.load(str(Path(audio_path)), sr=None, mono=True)
+def analyze_mix(
+    audio_path: str | Path,
+    hop: int = HOP_LENGTH,
+    y: np.ndarray | None = None,
+    sr: int | None = None,
+) -> MixAnalysis:
+    """Compute everything the segmenters + grid need off the mix.
+
+    Pass ``y``/``sr`` to skip the load when the caller already has the audio
+    in memory (must be mono, native rate).
+    """
+    if y is None or sr is None:
+        y, sr = librosa.load(str(Path(audio_path)), sr=None, mono=True)
     oenv = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
     bpm = librosa.feature.tempo(
         onset_envelope=oenv, sr=sr, hop_length=hop, aggregate=np.median

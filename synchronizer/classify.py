@@ -35,10 +35,21 @@ class ClassifiedTransient:
     transient_cluster_k8: int
 
 
-def _tercile_bucket(value: float, values: np.ndarray, labels: tuple[str, str, str]) -> str:
-    if values.size == 0 or np.isnan(value):
-        return labels[1]
+def _tercile_thresholds(values: np.ndarray) -> tuple[float, float] | None:
+    if values.size == 0:
+        return None
     lo, hi = np.quantile(values, [1 / 3, 2 / 3])
+    return float(lo), float(hi)
+
+
+def _tercile_bucket(
+    value: float,
+    thresholds: tuple[float, float] | None,
+    labels: tuple[str, str, str],
+) -> str:
+    if thresholds is None or np.isnan(value):
+        return labels[1]
+    lo, hi = thresholds
     if value <= lo:
         return labels[0]
     if value >= hi:
@@ -62,13 +73,7 @@ def _timbre_clusters(transients: list[TransientFeatures], n_clusters: int) -> np
     raw = km.fit_predict(mfcc_norm)
 
     centroids = np.array([t.centroid_hz for t in transients])
-    cluster_brightness = np.array([
-        centroids[raw == c].mean() if np.any(raw == c) else np.inf
-        for c in range(n_clusters)
-    ])
-    order = np.argsort(cluster_brightness)
-    remap = {int(old): new for new, old in enumerate(order)}
-    return np.array([remap[int(c)] for c in raw], dtype=int)
+    return _remap_by_centroid(raw, n_clusters, centroids)
 
 
 def _build_feature_matrix(transients: list[TransientFeatures]) -> np.ndarray:
@@ -170,20 +175,27 @@ def classify(
     clusters = _timbre_clusters(transients, n_timbre_clusters)
     holistic, chosen_k, silhouette, multi_k = _holistic_clusters(transients, cluster_k_max)
 
+    # Tercile thresholds are the same for every transient in the track; compute
+    # them once instead of recomputing inside _tercile_bucket per call.
+    pitch_thresh      = _tercile_thresholds(pitches)
+    centroid_thresh   = _tercile_thresholds(centroids)
+    energy_thresh     = _tercile_thresholds(energies)
+    duration_thresh   = _tercile_thresholds(durations)
+
     out = []
     for i, t in enumerate(transients):
         if np.isnan(t.pitch_hz) or t.pitch_confidence < PITCH_CONFIDENCE_FLOOR:
             pitch_bucket = "unpitched"
         else:
-            pitch_bucket = _tercile_bucket(t.pitch_hz, pitches, ("low", "mid", "high"))
+            pitch_bucket = _tercile_bucket(t.pitch_hz, pitch_thresh, ("low", "mid", "high"))
 
         out.append(
             ClassifiedTransient(
                 features=t,
                 pitch_bucket=pitch_bucket,
-                brightness_bucket=_tercile_bucket(t.centroid_hz, centroids, ("dark", "mid", "bright")),
-                energy_bucket=_tercile_bucket(t.energy, energies, ("soft", "medium", "loud")),
-                duration_bucket=_tercile_bucket(t.duration, durations, ("short", "medium", "long")),
+                brightness_bucket=_tercile_bucket(t.centroid_hz, centroid_thresh, ("dark", "mid", "bright")),
+                energy_bucket=_tercile_bucket(t.energy, energy_thresh, ("soft", "medium", "loud")),
+                duration_bucket=_tercile_bucket(t.duration, duration_thresh, ("short", "medium", "long")),
                 timbre_cluster=int(clusters[i]),
                 transient_cluster=int(holistic[i]),
                 transient_cluster_k2=int(multi_k[2][i]),

@@ -83,6 +83,7 @@ void mousePressed() {
       sound.rate(playbackRate);
     } else {
       e.disabled = !e.disabled;
+      disabledCount += e.disabled ? 1 : -1;
     }
   } else if (mouseButton == RIGHT) {
     int row = rowAt(mouseY);
@@ -147,11 +148,12 @@ void keyPressed() {
     }
   }
   if (key == 'm' || key == 'M') midiEnabled = !midiEnabled;
-  // Digit keys: reassign hovered event's transient_cluster.
+  // Digit keys: reassign hovered event's transient_cluster. Only digits
+  // within the active k make sense — clusters >= activeK are inert.
   if (key >= '0' && key <= '9' && hoverEventIdx >= 0) {
     int digit      = key - '0';
     int clusterRow = csvCols.length - 1;
-    if (digit < rowValues[clusterRow].length)
+    if (digit < activeK)
       events.get(hoverEventIdx).bucketIdx[clusterRow] = digit;
   }
 }

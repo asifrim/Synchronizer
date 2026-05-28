@@ -11,12 +11,13 @@
 
 void initAdsr() {
   int n = N_TRANSIENT_CLUSTERS;
-  attackFrac = new float[n];
-  decayFrac  = new float[n];
-  attackExp  = new boolean[n];
-  decayExp   = new boolean[n];
-  ccVal      = new float[n];
-  lastSent   = new int[n];
+  attackFrac     = new float[n];
+  decayFrac      = new float[n];
+  attackExp      = new boolean[n];
+  decayExp       = new boolean[n];
+  ccVal          = new float[n];
+  lastSent       = new int[n];
+  envCurveCache  = new float[n][N_ENV_SAMPLES + 1];
   for (int i = 0; i < n; i++) {
     attackFrac[i] = 0.08 + 0.04 * (i % 4);
     decayFrac[i]  = 0.70 - 0.05 * (i % 4);
@@ -27,6 +28,16 @@ void initAdsr() {
     lastSent[i] = -1;
   }
   loadAdsr();
+  for (int i = 0; i < n; i++) rebuildEnvCache(i);
+}
+
+// Sample envValue at N_ENV_SAMPLES+1 points; called whenever a cluster's
+// A/D/exp parameters change.
+void rebuildEnvCache(int c) {
+  for (int s = 0; s <= N_ENV_SAMPLES; s++) {
+    float p = (float)s / N_ENV_SAMPLES;
+    envCurveCache[c][s] = envValue(c, p);
+  }
 }
 
 void clampAdsr(int c) {
@@ -212,9 +223,9 @@ void drawPanelEnvCurve(int c, float now) {
   fill(red(col) * 0.15, green(col) * 0.15, blue(col) * 0.15);
   beginShape();
   vertex(cL, cB);
-  for (int i = 0; i <= 120; i++) {
-    float p = (i / 120.0) * 0.9999;
-    vertex(map(p, 0, 1, cL, cR), map(envValue(c, p), 0, 1, cB, cT));
+  for (int i = 0; i <= N_ENV_SAMPLES; i++) {
+    float p = (float)i / N_ENV_SAMPLES;
+    vertex(map(p, 0, 1, cL, cR), map(envCurveCache[c][i], 0, 1, cB, cT));
   }
   vertex(cR, cB);
   endShape(CLOSE);
@@ -222,9 +233,9 @@ void drawPanelEnvCurve(int c, float now) {
   // Curve line.
   stroke(red(col), green(col), blue(col), 220); strokeWeight(1.5); noFill();
   beginShape();
-  for (int i = 0; i <= 120; i++) {
-    float p = (i / 120.0) * 0.9999;
-    vertex(map(p, 0, 1, cL, cR), map(envValue(c, p), 0, 1, cB, cT));
+  for (int i = 0; i <= N_ENV_SAMPLES; i++) {
+    float p = (float)i / N_ENV_SAMPLES;
+    vertex(map(p, 0, 1, cL, cR), map(envCurveCache[c][i], 0, 1, cB, cT));
   }
   endShape();
 
@@ -376,6 +387,7 @@ void panelMousePressed() {
       if (abs(my - tcy) <= 10 && abs(mx - tcx) <= 22) {
         if (param == 0) attackExp[c] = !attackExp[c];
         else            decayExp[c]  = !decayExp[c];
+        rebuildEnvCache(c);
         for (int i = 0; i < N_TRANSIENT_CLUSTERS; i++) lastSent[i] = -1;
         saveAdsr();
         return;
@@ -392,5 +404,6 @@ void panelMouseDragged() {
   if (knobDragParam == 0) attackFrac[knobDragCluster] = v;
   else                    decayFrac[knobDragCluster]  = v;
   clampAdsr(knobDragCluster);
+  rebuildEnvCache(knobDragCluster);
   for (int i = 0; i < N_TRANSIENT_CLUSTERS; i++) lastSent[i] = -1;
 }

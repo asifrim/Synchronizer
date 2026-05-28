@@ -45,6 +45,11 @@ float eventX(Event e, float pageStart) {
   return gridLeft() + (e.t - pageStart) / PAGE_DURATION_S * (gridRight() - gridLeft());
 }
 
+// Playhead X within the page-window grid (shared by grid / melody / metro).
+float pagePlayheadX(float now, float pageStart) {
+  return gridLeft() + (now - pageStart) / PAGE_DURATION_S * (gridRight() - gridLeft());
+}
+
 float rowCenterY(int row) {
   return gridTop() + row * rowHeight() + rowHeight() / 2;
 }

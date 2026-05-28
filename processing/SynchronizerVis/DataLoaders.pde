@@ -157,10 +157,20 @@ void buildWaveformBuffer() {
 }
 
 int currentSegmentIndex(float now) {
+  // Fast path: playhead usually stays within the same segment frame-to-frame,
+  // so re-validate the previous answer before scanning.
+  if (cachedSegmentIdx >= 0 && cachedSegmentIdx < segments.size()) {
+    Segment s = segments.get(cachedSegmentIdx);
+    if (now >= s.startTime && now < s.endTime) return cachedSegmentIdx;
+  }
   for (int i = 0; i < segments.size(); i++) {
     Segment s = segments.get(i);
-    if (now >= s.startTime && now < s.endTime) return i;
+    if (now >= s.startTime && now < s.endTime) {
+      cachedSegmentIdx = i;
+      return i;
+    }
   }
+  cachedSegmentIdx = -1;
   return -1;
 }
 
@@ -169,18 +179,15 @@ void loadKClusters() {
   int nk = MULTI_K_MAX_FIXED - MULTI_K_MIN + 1;
   kClusters = new int[nk][n];
 
-  // Detect whether the new multi-k columns are present in the CSV.
-  boolean hasMultiK = false;
-  for (int c = 0; c < eventsTable.getColumnCount(); c++) {
-    if (eventsTable.getColumnTitle(c).equals("transient_cluster_k2")) { hasMultiK = true; break; }
-  }
+  java.util.HashSet<String> cols = new java.util.HashSet<String>();
+  for (int c = 0; c < eventsTable.getColumnCount(); c++)
+    cols.add(eventsTable.getColumnTitle(c));
+
+  boolean hasMultiK = cols.contains("transient_cluster_k2");
 
   for (int k = MULTI_K_MIN; k <= MULTI_K_MAX_FIXED; k++) {
     String col = hasMultiK ? ("transient_cluster_k" + k) : "transient_cluster";
-    boolean colExists = false;
-    for (int c = 0; c < eventsTable.getColumnCount(); c++) {
-      if (eventsTable.getColumnTitle(c).equals(col)) { colExists = true; break; }
-    }
+    boolean colExists = cols.contains(col);
     for (int i = 0; i < n; i++) {
       kClusters[k - MULTI_K_MIN][i] = colExists ? eventsTable.getRow(events.get(i).rowIndex).getInt(col) : 0;
     }

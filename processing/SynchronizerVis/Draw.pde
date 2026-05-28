@@ -1,5 +1,20 @@
 // Draw.pde — main draw loop and all left-column panel drawing functions.
 
+// Grid event intensity: pre-onset (dim), post-onset base, and the peak boost
+// that decays back to base over the event's duration. The falloff exponent
+// >1 makes the brightest moments concentrated near the onset.
+final float EVENT_PRE_INTENSITY  = 0.30;
+final float EVENT_BASE_INTENSITY = 0.55;
+final float EVENT_PEAK_BOOST     = 0.45;
+final float EVENT_FALLOFF_EXP    = 1.4;
+
+// Metronome tick geometry + flash timing. Flash starts 15 ms before the tick
+// (so the visual leads the audio slightly) and decays over the next 140 ms.
+final float METRO_BEAT_H_FRAC   = 0.42;
+final float METRO_SUB_H_FRAC    = 0.26;
+final float METRO_FLASH_LEAD_S  = -0.015;
+final float METRO_FLASH_HOLD_S  = 0.14;
+
 void draw() {
   background(15);
 
@@ -35,30 +50,44 @@ void draw() {
 
 // --- Event grid --------------------------------------------------------------
 
-void drawGridWaveformBackground(float pageStart, float pageEnd) {
+void rebuildGridBgBuffer(float pageStart, float pageEnd) {
   float gL = gridLeft(), gR = gridRight();
   float gT = gridTop(),  gB = gridBottom();
-  float baseline = gB;
-  float fullH    = (gB - gT) * 0.92;
-  float pageW    = gR - gL;
-  float pageDur  = pageEnd - pageStart;
-  int   n = wavePeaks.length;
+  int bufW = (int)(gR - gL) + 1;
+  int bufH = (int)(gB - gT);
+  if (gridBgBuffer == null || gridBgBuffer.width != bufW || gridBgBuffer.height != bufH) {
+    gridBgBuffer = createGraphics(bufW, bufH, P2D);
+  }
+  float fullH   = bufH * 0.92;
+  float pageDur = pageEnd - pageStart;
+  int   n       = wavePeaks.length;
 
-  stroke(55, 68, 95);
-  strokeWeight(1);
-  noFill();
-  for (int px = (int)gL; px <= (int)gR; px++) {
-    float t0 = pageStart + (px - gL)       / pageW * pageDur;
-    float t1 = pageStart + (px - gL + 1.0) / pageW * pageDur;
+  gridBgBuffer.beginDraw();
+  gridBgBuffer.clear();
+  gridBgBuffer.stroke(55, 68, 95);
+  gridBgBuffer.strokeWeight(1);
+  gridBgBuffer.noFill();
+  for (int px = 0; px < bufW; px++) {
+    float t0 = pageStart + (float) px        / bufW * pageDur;
+    float t1 = pageStart + (float)(px + 1.0) / bufW * pageDur;
     if (t0 >= trackDuration) break;
-    // Clamp both ends — near the track end t0/t1 can map past the last sample.
     int i0 = constrain((int)(t0 / waveformWindowDur), 0, n - 1);
     int i1 = constrain((int)(t1 / waveformWindowDur), 0, n - 1);
     if (i1 < i0) i1 = i0;
     float p = 0;
     for (int i = i0; i <= i1; i++) p = max(p, wavePeaks[i]);
-    line(px, baseline, px, baseline - p * fullH);
+    gridBgBuffer.line(px, bufH, px, bufH - p * fullH);
   }
+  gridBgBuffer.endDraw();
+}
+
+void drawGridWaveformBackground(float pageStart, float pageEnd) {
+  int page = (int)(pageStart / PAGE_DURATION_S);
+  if (page != gridBgPage || gridBgBuffer == null) {
+    rebuildGridBgBuffer(pageStart, pageEnd);
+    gridBgPage = page;
+  }
+  image(gridBgBuffer, gridLeft(), gridTop());
 }
 
 void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float now) {
@@ -75,21 +104,21 @@ void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float
 
   int   clusterRow = csvCols.length - 1;
   float maxEnvH    = (gB - gT) * 0.90;
-  int   N_SAMPLES  = 48;
 
   for (Event e : pageEvents) {
     float ex  = eventX(e, pageStart);
     float age = now - e.t;
     float intensity;
     if (e.disabled)       intensity = 0.0;
-    else if (age < 0)     intensity = 0.30;
-    else if (age > e.dur) intensity = 0.55;
-    else                  intensity = 0.55 + 0.45 * pow(1 - age / e.dur, 1.4);
+    else if (age < 0)     intensity = EVENT_PRE_INTENSITY;
+    else if (age > e.dur) intensity = EVENT_BASE_INTENSITY;
+    else                  intensity = EVENT_BASE_INTENSITY + EVENT_PEAK_BOOST * pow(1 - age / e.dur, EVENT_FALLOFF_EXP);
 
     int   cluster  = max(0, e.bucketIdx[clusterRow]);
     float normRms  = (eventNormRms != null) ? eventNormRms[e.rowIndex] : 1.0;
     float envLen   = max(e.dur, MIN_ENV_S);
     float envW     = envLen / PAGE_DURATION_S * (gR - gL);
+    float[] curve  = envCurveCache[cluster];
 
     for (int row = 0; row < nRows; row++) {
       int b = e.bucketIdx[row];
@@ -101,10 +130,9 @@ void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float
       fill(red(c) * intensity, green(c) * intensity, blue(c) * intensity, 200);
       beginShape();
       vertex(ex, gB);
-      for (int s = 0; s <= N_SAMPLES; s++) {
-        float p  = (float)s / N_SAMPLES;
-        float v  = envValue(cluster, p);
-        vertex(ex + p * envW, gB - v * maxH);
+      for (int s = 0; s <= N_ENV_SAMPLES; s++) {
+        float p = (float)s / N_ENV_SAMPLES;
+        vertex(ex + p * envW, gB - curve[s] * maxH);
       }
       vertex(ex + envW, gB);
       endShape(CLOSE);
@@ -118,7 +146,7 @@ void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float
 
   // Playhead
   if (now >= pageStart && now < pageEnd) {
-    float playX = gL + (now - pageStart) / PAGE_DURATION_S * (gR - gL);
+    float playX = pagePlayheadX(now, pageStart);
     stroke(255, 200, 50, 200); strokeWeight(2);
     line(playX, gT - 12, playX, gB + 12);
     noStroke();
@@ -225,7 +253,7 @@ void drawMelody(float pageStart, float pageEnd, float now) {
   noStroke();
 
   if (now >= pageStart && now < pageEnd) {
-    float playX = gL + (now - pageStart) / PAGE_DURATION_S * (gR - gL);
+    float playX = pagePlayheadX(now, pageStart);
     stroke(255, 200, 50, 160); strokeWeight(2);
     line(playX, melodyTop() - 4, playX, melodyBottom() + 4);
     noStroke();
@@ -252,10 +280,11 @@ void drawMetro(float pageStart, float pageEnd, float now) {
     float y = metroRowY(row);
     color c = divisionColors[row];
     boolean onBeat = (g.phase == 0);
-    float baseH = rowH * (onBeat ? 0.42 : 0.26);
+    float baseH = rowH * (onBeat ? METRO_BEAT_H_FRAC : METRO_SUB_H_FRAC);
 
     float age   = now - g.t;
-    float flash = (age >= -0.015 && age < 0.14) ? constrain(1 - age / 0.14, 0, 1) : 0;
+    float flash = (age >= METRO_FLASH_LEAD_S && age < METRO_FLASH_HOLD_S)
+                  ? constrain(1 - age / METRO_FLASH_HOLD_S, 0, 1) : 0;
 
     stroke(red(c) * 0.55, green(c) * 0.55, blue(c) * 0.55, onBeat ? 200 : 110);
     strokeWeight(onBeat ? 2 : 1);
@@ -275,7 +304,7 @@ void drawMetro(float pageStart, float pageEnd, float now) {
   noStroke();
 
   if (now >= pageStart && now < pageEnd) {
-    float playX = gL + (now - pageStart) / PAGE_DURATION_S * (gR - gL);
+    float playX = pagePlayheadX(now, pageStart);
     stroke(255, 200, 50, 160); strokeWeight(2);
     line(playX, metroTop() - 6, playX, metroBottom() + 6);
     noStroke();
@@ -327,9 +356,6 @@ void drawWaveform(float now, float pageStart, float pageEnd) {
 // --- HUD ---------------------------------------------------------------------
 
 void drawHUD(float now, int page, int eventsThisPage) {
-  int disabledCount = 0;
-  for (Event e : events) if (e.disabled) disabledCount++;
-
   fill(200);
   textAlign(LEFT, TOP); textSize(14);
   String rateStr = (playbackRate != 1.0) ? "  [" + nf(playbackRate, 1, 2) + "x]" : "";
@@ -382,7 +408,7 @@ void drawHUD(float now, int page, int eventsThisPage) {
       ? rowValues[clusterRow][cur] : "?";
     fill(200, 200, 255); textAlign(LEFT, TOP);
     text("event " + hoverEventIdx + "   cluster: " + curLabel +
-         "   press 0-" + (rowValues[clusterRow].length - 1) + " to reassign", 24, 50);
+         "   press 0-" + (activeK - 1) + " to reassign", 24, 50);
   }
 
   if (savedNoticeUntil > millis()) {

@@ -101,6 +101,11 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     y, sr = load_audio(str(in_path), sr=cfg.sr)
+    # The sidecar analyses (waveform, segments, tempo, grid) always run on the
+    # original input at its native rate. If that's the same audio we just
+    # loaded — no drum stem, no resampling — pass it through instead of
+    # re-decoding the file twice.
+    share_original_audio = (in_path == original_input) and (cfg.sr is None)
     onsets = detect_onsets(y, sr, cfg)
     feats = extract_features(y, sr, onsets, hop_length=cfg.hop_length, compute_pitch=not args.no_pitch)
     classified, chosen_k, silhouette = classify(
@@ -129,7 +134,10 @@ def main(argv: list[str] | None = None) -> int:
     # original input (the audio the user actually plays in the sketch), not
     # the separated stem.
     waveform_path = sidecar("waveform.csv")
-    write_waveform(original_input, waveform_path)
+    if share_original_audio:
+        write_waveform(original_input, waveform_path, y=y, sr=sr)
+    else:
+        write_waveform(original_input, waveform_path)
 
     print(f"{in_path.name}: {len(classified)} transients -> {csv_path}")
     print(f"transient clusters: k={chosen_k} (silhouette={silhouette:.3f})")
@@ -140,7 +148,10 @@ def main(argv: list[str] | None = None) -> int:
     # stem). The load + onset envelope + global tempo are computed once and
     # shared between the two.
     if not (args.no_segments and args.no_tempo_segments and args.no_grid):
-        mix = analyze_mix(original_input)
+        if share_original_audio:
+            mix = analyze_mix(original_input, y=y, sr=sr)
+        else:
+            mix = analyze_mix(original_input)
         print(f"global tempo: {mix.global_bpm:.1f} BPM")
 
         if not args.no_segments:

@@ -51,13 +51,13 @@ def _pitch(slice_y: np.ndarray, sr: int) -> tuple[float, float]:
     if slice_y.size < 2048:
         return float("nan"), 0.0
     try:
-        f0, voiced_flag, voiced_prob = librosa.pyin(
+        f0, _, voiced_prob = librosa.pyin(
             slice_y,
             sr=sr,
             fmin=float(librosa.note_to_hz("C2")),
             fmax=float(librosa.note_to_hz("C7")),
         )
-    except Exception:
+    except (ValueError, RuntimeError):
         return float("nan"), 0.0
 
     voiced = f0[~np.isnan(f0)]

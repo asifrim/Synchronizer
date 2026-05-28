@@ -2,18 +2,21 @@
 //
 // Layout (top to bottom, left column):
 //   - HUD line
-//   - Event grid: 5 rows (pitch, brightness, energy, duration, timbre).
-//     Each event is a vertical stack of 5 colored cells, positioned by its
-//     start_time within the current page window. Cells flash on onset and
-//     fade through the transient's duration.
+//   - Event grid: one row of ADSR-shaped envelope curves, one per transient,
+//     coloured by holistic cluster and positioned by start_time within the
+//     current page window. Curve height scales with the transient's RMS
+//     quantile within its cluster; curves brighten on the playhead crossing
+//     and fade through the transient's duration.
+//   - Melody panel: 3 rows (vocals / bass / other) of per-stem note bars.
 //   - Metronome grid: 4 rows (1/4, 1/8, 1/16, 1/32 note ticks), beat-anchored
 //     so they follow the detected tempo. Each tick flashes as the playhead
 //     crosses it; on-beat ticks (phase 0) are taller/brighter.
 //   - Waveform thumbnail: full-track peaks; current page window highlighted;
 //     playhead marker shows position in the entire track.
 // Right panel (always visible):
-//   - Per-cluster ADSR envelope curve.
-//   - Sliders for A / D / S / R.
+//   - k-selector strip at top (k = 2..8).
+//   - Per-cluster AD envelope curve preview.
+//   - A and D rotary knobs (vertical-drag to change).
 //   - LIN / EXP shape toggles for attack and decay.
 //   - CC level meter.
 //
@@ -27,7 +30,7 @@
 //                 sit just off the ticks)
 //   - / =         slow down / speed up (0.25x steps, range 0.25x–2.0x; alters pitch)
 //   m             toggle MIDI output on/off
-//   0-9           reassign hovered event's cluster
+//   0-9           reassign hovered event's cluster (digits >= activeK ignored)
 //   ctrl/cmd+s    save event edits to <basename>_v<N>.csv
 //
 // Mouse:
@@ -35,28 +38,29 @@
 //   shift+left-click on an event  preview: plays from onset for its duration, then stops
 //   right-click + drag on cell    drag up = higher bucket value
 //                                 (drag down = lower), per-row bucket ladder
-//   right panel: drag A/D/S/R sliders   reshape envelope per cluster
+//   right panel: drag A / D knobs       reshape envelope per cluster
 //   right panel: click LIN / EXP        toggle attack or decay curve shape
+//   right panel: click k-selector       switch the active number of clusters
+//   right panel: click "RMS scale"      toggle quantile RMS scaling for MIDI
 //
 // MIDI output (drives TouchDesigner): as the playhead crosses each transient,
-// an ADSR envelope is emitted as a 7-bit MIDI CC. Each transient_cluster has
-// its own ADSR shape and its own CC. Contract (do not change without updating
+// an AD envelope is emitted as a 7-bit MIDI CC. Each transient_cluster has
+// its own AD shape and its own CC. Contract (do not change without updating
 // the TD patch): MIDI channel 1; cluster i -> CC (BASE_CC + i); value 0-127,
 // sent only when it changes. Envelope total time = the transient's duration
 // (floored at MIN_ENV_S). Smooth the 7-bit stepping in TD with a Lag/Filter
 // CHOP. Sent to the virtual port whose name contains MIDI_PORT_NAME (loopMIDI
 // on Windows); if absent, the sketch runs as a visualizer with MIDI off.
 //
-// Data files in data/:
-//   <AUDIO_FILE>   the audio that plays (WAV/MP3/AIFF/OGG — Processing Sound
+// Data files in data/<TRACK>/:
+//   track.wav      the audio that plays (WAV/MP3/AIFF/OGG — Processing Sound
 //                  does NOT support FLAC)
-//   <CSV_FILE>     events from `synchronizer ... -o ...`
-//   <WAVE_FILE>    waveform peaks, auto-generated as
-//                  <csv_stem>_waveform.csv alongside the events CSV.
-//   <SEGMENTS_FILE> structural segments (optional), <csv_stem>_segments.csv.
-//   <GRID_FILE>    metronome ticks (optional), <csv_stem>_grid.csv.
-//   <MELODY_*_FILE> per-stem note events (optional), <csv_stem>_<stem>_melody.csv.
-//   <csv_stem>_adsr.csv  per-cluster ADSR params (written on drag release / toggle).
+//   events.csv     events from `synchronizer ... -o data/<TRACK>`
+//   waveform.csv   waveform peaks for the thumbnail strip.
+//   segments.csv   structural segments (optional).
+//   grid.csv       metronome ticks (optional).
+//   <stem>_melody.csv  per-stem note events (optional).
+//   adsr.csv       per-cluster AD params (written on drag release / toggle).
 
 import processing.sound.*;
 import java.io.File;
@@ -140,12 +144,12 @@ float[]   snapTickTimes;       // sorted 1/32 tick times used for grid snap
 boolean   gridSnapEnabled = true;
 float     trackDuration;
 PGraphics waveformBuffer;
+PGraphics gridBgBuffer;        // cached grid waveform background; rebuilt on page change
+int       gridBgPage = -1;
 
-// Bucket label arrays — indices match CSV values.
-final String[] PITCH      = {"unpitched", "low", "mid", "high"};
-final String[] BRIGHTNESS = {"dark", "mid", "bright"};
-final String[] ENERGY     = {"soft", "medium", "loud"};
-final String[] DURATION   = {"short", "medium", "long"};
+// Bucket label arrays — indices match CSV values. Only TRANSIENT_CLUSTER is
+// used by the grid; TIMBRE survives as a label source for the (legacy) palette
+// builder if a later panel needs it.
 String[]       TIMBRE;
 String[]       TRANSIENT_CLUSTER;
 
@@ -162,6 +166,8 @@ int   dragEventIdx    = -1;
 int   dragRow         = -1;
 int   dragStartBucket = -1;
 float dragStartY      = 0;
+int   disabledCount   = 0;    // maintained on toggle; read by HUD
+int   cachedSegmentIdx = -1;  // current-segment cache; reused while playhead stays in range
 
 float playbackRate = 1.0;
 float stopAtTime   = -1;   // pause when playhead crosses this (preview feature)
@@ -178,6 +184,11 @@ float[]   attackFrac, decayFrac;
 boolean[] attackExp, decayExp;   // true = exponential curve shape
 float[]   ccVal;                 // live envelope value per cluster, 0..1
 int[]     lastSent;              // last quantized CC value sent (-1 = not yet sent)
+// Envelope shape only changes when a knob/toggle moves, but it's sampled
+// many times per frame for the grid + panel preview. Cache the sampled
+// curve and rebuild it on edit; consumers read from envCurveCache.
+final int N_ENV_SAMPLES = 48;
+float[][] envCurveCache;         // [N_TRANSIENT_CLUSTERS][N_ENV_SAMPLES+1]
 
 MidiOut midiOut;
 boolean midiEnabled = true;
