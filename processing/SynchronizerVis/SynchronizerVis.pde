@@ -69,7 +69,7 @@ import java.io.File;
 
 // --- Track / file config (change only TRACK to switch tracks) ----------------
 
-final String TRACK = "08_Julie_and_Candy";
+final String TRACK = "10_Shake_the_Disease";
 
 final String AUDIO_FILE    = TRACK + "/track.wav";
 final String CSV_FILE      = TRACK + "/events.csv";
