@@ -47,6 +47,8 @@
 //   right panel: click LIN / EXP      toggle attack or decay curve shape
 //   right panel: click k-selector     switch the active number of clusters
 //   right panel: click "RMS scale"    toggle quantile RMS scaling for MIDI
+//   right panel: click "LEGATO"       extend each transient's decay to the next
+//                                     active transient's start time
 //
 // MIDI output (drives TouchDesigner): as the playhead crosses each transient,
 // an AD envelope is emitted as a 7-bit MIDI CC. Each transient_cluster has
@@ -178,6 +180,9 @@ int   dragEventIdx    = -1;
 int   dragRow         = -1;
 int   dragStartBucket = -1;
 float dragStartY      = 0;
+boolean legatoEnabled    = false;
+float[] legatoDurs;              // per-event legato durations (indexed by rowIndex)
+
 int   timeDragEventIdx   = -1;  // left-drag state (time-shift or cluster-change)
 float timeDragStartX     = 0;
 float timeDragStartY     = 0;

@@ -70,7 +70,7 @@ int findEventNear(float mx, float my) {
     Event e = events.get(i);
     if (e.t < pageStart || e.t >= pageEnd) continue;
     float ex   = eventX(e, pageStart);
-    float envW = max(e.dur, MIN_ENV_S) / PAGE_DURATION_S * (gR - gL);
+    float envW = eventEnvLen(e) / PAGE_DURATION_S * (gR - gL);
     if (mx < ex - 4 || mx > ex + envW + 4) continue;
     float dx = abs(mx - ex);
     if (dx < bestDx) { bestDx = dx; best = i; }
@@ -176,6 +176,7 @@ void mouseReleased() {
       // Committed drag — write new start_time back to eventsTable so Ctrl+S persists it.
       Event e = events.get(timeDragEventIdx);
       eventsTable.getRow(e.rowIndex).setString("start_time", nf(e.t, 0, 6));
+      if (legatoEnabled) buildLegatoDurs();
     }
     timeDragEventIdx = -1;
     timeDragMoved    = false;
@@ -227,6 +228,7 @@ void keyPressed() {
     e.disabled = !e.disabled;
     disabledCount += e.disabled ? 1 : -1;
     selectedEventIdx = -1;
+    if (legatoEnabled) buildLegatoDurs();
   }
   // Digit keys: reassign hovered event's transient_cluster. Only digits
   // within the active k make sense — clusters >= activeK are inert.

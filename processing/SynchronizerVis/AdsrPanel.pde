@@ -33,6 +33,36 @@ void initAdsr() {
   }
   loadAdsr();
   for (int i = 0; i < n; i++) rebuildEnvCache(i);
+  buildLegatoDurs();
+}
+
+// Effective envelope length for an event — uses legato gap when legato is on.
+float eventEnvLen(Event e) {
+  if (legatoEnabled && legatoDurs != null && e.rowIndex < legatoDurs.length)
+    return legatoDurs[e.rowIndex];
+  return max(e.dur, MIN_ENV_S);
+}
+
+// (Re)compute legato durations: each active event's envelope extends to the
+// start of the next active event (or to trackDuration for the last one).
+void buildLegatoDurs() {
+  int n = events.size();
+  if (legatoDurs == null || legatoDurs.length != n) legatoDurs = new float[n];
+
+  ArrayList<Event> active = new ArrayList<Event>();
+  for (Event e : events) { if (!e.disabled) active.add(e); }
+  java.util.Collections.sort(active, new java.util.Comparator<Event>() {
+    public int compare(Event a, Event b) { return Float.compare(a.t, b.t); }
+  });
+
+  for (int i = 0; i < active.size(); i++) {
+    Event e = active.get(i);
+    float nextT = (i + 1 < active.size()) ? active.get(i + 1).t : trackDuration;
+    legatoDurs[e.rowIndex] = max(nextT - e.t, MIN_ENV_S);
+  }
+  for (Event e : events) {
+    if (e.disabled) legatoDurs[e.rowIndex] = max(e.dur, MIN_ENV_S);
+  }
 }
 
 // Sample envValue at N_ENV_SAMPLES+1 points; called whenever a cluster's
@@ -167,6 +197,15 @@ void drawAdsrPanel(float now) {
   text("k =", pL + 8, 8);
   drawKSelector();
 
+  // LEGATO toggle.
+  float lx = pL + pW - 118; float ly = 8; float lW = 52; float lH = 16;
+  noStroke();
+  fill(legatoEnabled ? color(55, 75, 90) : 30);
+  rect(lx, ly - lH * 0.5, lW, lH, 3);
+  textAlign(CENTER, CENTER); textSize(10);
+  fill(legatoEnabled ? color(140, 200, 240) : color(75));
+  text("LEGATO", lx + lW * 0.5, ly);
+
   // RMS-scale toggle — top-right corner of the panel header.
   float bx = pL + pW - 58; float by = 8; float bW = 52; float bH = 16;
   noStroke();
@@ -273,7 +312,7 @@ void drawPanelEnvCurve(int c, float now) {
   for (Event e : events) {
     if (e.disabled || e.bucketIdx[clusterRow] != c) continue;
     float triggerT = e.origT + clusterOffsetMs[c] / 1000.0;
-    float envLen   = max(e.dur, MIN_ENV_S);
+    float envLen   = eventEnvLen(e);
     float p        = (now - triggerT) / envLen;
     if (p >= 0 && p < 1 && p > maxPhase) maxPhase = p;
   }
@@ -437,6 +476,15 @@ void drawPanelMeter(int c) {
 
 void panelMousePressed() {
   float mx = mouseX, my = mouseY;
+
+  // LEGATO toggle.
+  float lx = panelLeft() + panelW() - 118; float ly = 8; float lW = 52; float lH = 16;
+  if (abs(my - ly) <= lH * 0.5 + 2 && mx >= lx && mx <= lx + lW) {
+    legatoEnabled = !legatoEnabled;
+    if (legatoEnabled) buildLegatoDurs();
+    for (int i = 0; i < N_TRANSIENT_CLUSTERS; i++) lastSent[i] = -1;
+    return;
+  }
 
   // RMS-scale toggle.
   float bx = panelLeft() + panelW() - 58; float by = 8; float bW = 52; float bH = 16;

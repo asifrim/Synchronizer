@@ -90,7 +90,7 @@ void updateMidi(float now) {
       // Shift the transient's trigger time by the cluster's timing offset.
       // The envelope shape and duration are unchanged; it just fires earlier/later.
       float triggerT = e.origT + clusterOffsetMs[c] / 1000.0;
-      float envLen   = max(e.dur, MIN_ENV_S);
+      float envLen   = eventEnvLen(e);
       float p        = (now - triggerT) / envLen;
       if (p < 0 || p >= 1) continue;
       float v = envValue(c, p) * (midiEnergyScale ? eventNormRms[e.rowIndex] : 1.0);

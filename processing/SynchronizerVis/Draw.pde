@@ -117,7 +117,7 @@ void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float
     else if (age > e.dur) intensity = EVENT_BASE_INTENSITY;
     else                  intensity = EVENT_BASE_INTENSITY + EVENT_PEAK_BOOST * pow(1 - age / e.dur, EVENT_FALLOFF_EXP);
     float normRms  = (eventNormRms != null) ? eventNormRms[e.rowIndex] : 1.0;
-    float envLen   = max(e.dur, MIN_ENV_S);
+    float envLen   = eventEnvLen(e);
     float envW     = envLen / PAGE_DURATION_S * (gR - gL);
     float[] curve  = envCurveCache[cluster];
 
@@ -163,7 +163,7 @@ void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float
     Event se = events.get(selectedEventIdx);
     if (se.t >= pageStart && se.t < pageEnd) {
       float sx    = eventX(se, pageStart);
-      float sEnvW = max(se.dur, MIN_ENV_S) / PAGE_DURATION_S * (gR - gL);
+      float sEnvW = eventEnvLen(se) / PAGE_DURATION_S * (gR - gL);
       float sNormR = (eventNormRms != null) ? eventNormRms[se.rowIndex] : 1.0;
       float sMaxH  = maxEnvH * sNormR;
       noFill();
@@ -178,7 +178,7 @@ void drawGrid(ArrayList<Event> pageEvents, float pageStart, float pageEnd, float
     Event he = events.get(hoverEventIdx);
     if (he.t >= pageStart && he.t < pageEnd) {
       float hx      = eventX(he, pageStart);
-      float hEnvW   = max(he.dur, MIN_ENV_S) / PAGE_DURATION_S * (gR - gL);
+      float hEnvW   = eventEnvLen(he) / PAGE_DURATION_S * (gR - gL);
       float hNormR  = (eventNormRms != null) ? eventNormRms[he.rowIndex] : 1.0;
       float hMaxH   = maxEnvH * hNormR;
       noFill();
@@ -342,7 +342,7 @@ void drawDragOverlay(float pageStart, float pageEnd) {
   float gT   = gridTop();
   float gL   = gridLeft(), gR = gridRight();
   float ex   = eventX(e, pageStart);
-  float envW = max(e.dur, MIN_ENV_S) / PAGE_DURATION_S * (gR - gL);
+  float envW = eventEnvLen(e) / PAGE_DURATION_S * (gR - gL);
   float normR = (eventNormRms != null) ? eventNormRms[e.rowIndex] : 1.0;
   float maxH  = (gB - gT) * 0.90 * normR;
   noFill();
