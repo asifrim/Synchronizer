@@ -1,0 +1,19 @@
+Step 1: Manifold Compression via UMAPDo not use PCA here. PCA assumes linear relationships and will simply project the massive noise cloud onto your lower dimensions. Instead, use UMAP (Uniform Manifold Approximation and Projection).  Why it works: UMAP constructs a weighted graph of nearest neighbors in the 2048-D space before it does any reduction. Because it uses local neighbor distances rather than global Euclidean distances, it is remarkably resilient to uninformative dimensions. It looks at who is close to whom locally, completely ignoring the fact that the overall global space is sparse.  Crucial Tweaks for Clustering: * Set n_components to 5 or 10, not 2. You don’t need to visualize this; you just need to compress it. Forcing 2048 dimensions down to 2 destroys genuine topological structures.Set min_dist to 0.0. This forces UMAP to pack tightly related transients right on top of each other into dense pockets, which makes the downstream clustering infinitely easier.Increase n_neighbors (e.g., 30 to 50) to ensure global structure and overall transient categories are preserved, preventing the model from shattering single drum types into dozens of tiny fragments.
+
+Step 2: Density Partitioning via HDBSCANOnce you have a clean, dense, 5-dimensional manifold, pass it to HDBSCAN (Hierarchical Density-Based Spatial Clustering of Applications with Noise).Why it works: Drums and acoustic transients naturally form clusters of highly varying densities (e.g., your primary kick drum samples might be incredibly uniform and tightly packed, while your auxiliary percussion and found-sound transients might be loosely distributed). $k$-means forces spherical, even clusters; HDBSCAN calculates a tree of varying densities.The Noise Filter: Most importantly, HDBSCAN doesn't force a label onto every point. If a transient falls into a weird, uninformative zone of the manifold, HDBSCAN cleanly labels it as -1 (Noise). This purges poorly embedded audio from polluting your clean drum categories.  
+
+HDBSCAN is fundamentally a density-based algorithm, which means it does not accept a fixed $k$ parameter (like $k$-means) to force the data into an arbitrary number of bins. Instead, it discovers the natural number of clusters based on density and stability.If you have a strict constraint—such as a user interface that can only display a maximum of 16 drum categories—you have to guide or post-process HDBSCAN to respect that upper limit.Here are the three most effective strategies to enforce a maximum cluster cap while preserving HDBSCAN's density-based benefits.1. The Post-Hoc Agglomerative Merge (The Cleanest Approach)Instead of forcing HDBSCAN to find fewer clusters, let it find as many as it wants, and then hierarchically merge the most similar clusters together until you hit your target maximum.Because HDBSCAN builds a condensed cluster tree under the hood, we can extract the central representation (the medoid or centroid) of each discovered cluster and run Agglomerative Clustering on just those points.
+
+[HDBSCAN finds 30 clusters] ➔ [Extract 30 Centroids] ➔ [Agglomerative Clustering to Max K] ➔ [Map Labels Back]
+
+How to implement it:
+
+    Run HDBSCAN normally. Let's say it finds 28 clusters.
+
+    Calculate the average embedding vector (centroid) for each of those 28 clusters in your compressed UMAP space.
+
+    Use scipy.cluster.hierarchy or sklearn.cluster.AgglomerativeClustering on those 28 centroids. Set n_clusters=MAX_DESIRED_CLUSTERS.
+
+    Create a mapping dictionary to reassign your original data points to their new, merged cluster IDs.
+
+This ensures that highly related micro-clusters (e.g., "tight acoustic hi-hats" and "sizzly electronic hi-hats") are smoothly fused into a single broad "Hi-Hats" group without shattering the global geometry.

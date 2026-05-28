@@ -5,7 +5,9 @@ import argparse
 import sys
 from pathlib import Path
 
-from .classify import DEFAULT_CLUSTER_K_MAX, DEFAULT_N_TIMBRE_CLUSTERS, classify
+import numpy as np
+
+from .classify import DEFAULT_CLUSTER_K_MAX, classify
 from .detect import DetectionConfig, detect_onsets, load_audio
 from .features import extract_features
 from .grid import build_grid, write_grid
@@ -37,21 +39,19 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Per-band min spacing in ms (lows mids highs, default 200 100 50).")
     p.add_argument("--percussive", action="store_true",
                    help="Run HPSS and detect on percussive component only.")
-    p.add_argument("--drums", action="store_true",
-                   help="Separate the drum stem via Demucs and run the whole pipeline on it. "
-                        "Cached in --stems-dir, so the slow step only runs once per file. "
-                        "Implies --no-pitch since drum stems have no pitched content.")
+    p.add_argument("--no-drums", action="store_true",
+                   help="Skip Demucs drum separation and run the transient pipeline on the raw "
+                        "input. By default the pipeline always operates on the separated drum "
+                        "stem (cached in --stems-dir).")
     p.add_argument("--stems-dir", default="stems",
                    help="Directory for cached Demucs output (default: ./stems).")
     p.add_argument("--no-pitch", action="store_true",
                    help="Skip pyin pitch estimation (~2× faster). All transients get pitch_bucket=unpitched.")
     p.add_argument("--no-backtrack", action="store_true",
                    help="Don't snap onsets to preceding minimum.")
-    p.add_argument("--timbre-clusters", type=int, default=DEFAULT_N_TIMBRE_CLUSTERS,
-                   help=f"K for k-means timbre clustering (default {DEFAULT_N_TIMBRE_CLUSTERS}).")
     p.add_argument("--cluster-k-max", type=int, default=DEFAULT_CLUSTER_K_MAX,
-                   help=f"Upper bound on k when searching for the best holistic transient "
-                        f"clustering (default {DEFAULT_CLUSTER_K_MAX}, chosen by silhouette score).")
+                   help=f"Maximum number of transient clusters after HDBSCAN discovery + "
+                        f"agglomerative merge (default {DEFAULT_CLUSTER_K_MAX}).")
     p.add_argument("--n-segments", type=int, default=12,
                    help="Target number of structural segments (default 12).")
     p.add_argument("--n-segment-labels", type=int, default=4,
@@ -68,7 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--melody", action="store_true",
                    help="Detect notes on melodic stems (vocals/bass/other) via Demucs. "
                         "Writes <csv_stem>_<stem>_melody.csv per stem. "
-                        "Requires the [demucs] extra and a full 4-stem separation.")
+                        "Triggers a full 4-stem separation (cached after first run).")
     p.add_argument("--melody-stems", default="vocals,bass,other",
                    help="Comma-separated stems for --melody (default vocals,bass,other).")
     return p
@@ -83,7 +83,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {in_path} not found", file=sys.stderr)
         return 2
 
-    if args.drums:
+    drums_separated = not args.no_drums
+    if drums_separated:
         from .separate import extract_drums
         in_path = extract_drums(in_path, stems_dir=Path(args.stems_dir))
         args.no_pitch = True
@@ -108,17 +109,12 @@ def main(argv: list[str] | None = None) -> int:
     share_original_audio = (in_path == original_input) and (cfg.sr is None)
     onsets = detect_onsets(y, sr, cfg)
     feats = extract_features(y, sr, onsets, hop_length=cfg.hop_length, compute_pitch=not args.no_pitch)
-    classified, chosen_k, silhouette = classify(
-        feats,
-        n_timbre_clusters=args.timbre_clusters,
-        cluster_k_max=args.cluster_k_max,
-    )
-    # Resolve the output path. If -o is a directory (no suffix) or explicitly
-    # named "events.csv", write canonical sidecar names alongside it.
-    # Otherwise keep the old <stem>_<sidecar>.csv convention for compat.
+    from .embeddings import compute_panns_embeddings
+    embeddings = compute_panns_embeddings(y, sr, onsets)
+
+    # Resolve output path early so we can write the embeddings sidecar before classify.
     out_arg = Path(args.output)
     if not out_arg.suffix:
-        # Directory form: -o out/04_Krib  →  out/04_Krib/events.csv
         csv_path = out_arg / "events.csv"
     else:
         csv_path = out_arg
@@ -128,7 +124,22 @@ def main(argv: list[str] | None = None) -> int:
             return csv_path.parent / name
         return csv_path.with_name(csv_path.stem + "_" + name)
 
+    emb_path = sidecar("embeddings.npy")
+    emb_path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(emb_path, embeddings)
+
+    classified, chosen_k, silhouette = classify(
+        feats,
+        embeddings,
+        cluster_k_max=args.cluster_k_max,
+    )
+
     write_csv(classified, csv_path)
+
+    from .plot import write_umap_plots
+    plot_path = sidecar("umap_clusters.png")
+    write_umap_plots(embeddings, classified, plot_path)
+    print(f"umap plots -> {plot_path}")
 
     # Waveform peaks for the Processing visualizer — always derived from the
     # original input (the audio the user actually plays in the sketch), not
@@ -141,13 +152,14 @@ def main(argv: list[str] | None = None) -> int:
 
     # When the drum stem was separated, also write its waveform so the
     # Processing sketch can switch to it when the user solos that stem.
-    if args.drums:
+    if drums_separated:
         drum_wave_path = sidecar("drums_waveform.csv")
         write_waveform(in_path, drum_wave_path)
         print(f"drums waveform -> {drum_wave_path}")
 
     print(f"{in_path.name}: {len(classified)} transients -> {csv_path}")
-    print(f"transient clusters: k={chosen_k} (silhouette={silhouette:.3f})")
+    print(f"transient clusters: k={chosen_k} (HDBSCAN→agglomerative, silhouette={silhouette:.3f})")
+    print(f"embeddings -> {emb_path}")
     print(f"waveform -> {waveform_path}")
 
     # Structural + tempo analysis, both computed from the original mix (the

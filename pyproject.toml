@@ -12,14 +12,17 @@ dependencies = [
     "soundfile>=0.12",
     "numpy>=1.24",
     "scipy>=1.10",
+    "scikit-learn>=1.3",
+    "umap-learn>=0.5",
+    "matplotlib>=3.7",
+    "torch>=2.0",
+    "demucs>=4",
+    "panns-inference>=0.1.1",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7",
-]
-demucs = [
-    "demucs>=4",
 ]
 
 [project.scripts]

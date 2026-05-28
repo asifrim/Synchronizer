@@ -4,12 +4,21 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-import soundfile as sf
+import pytest
 
 from synchronizer.classify import classify
 from synchronizer.detect import detect_onsets
 from synchronizer.features import extract_features
 from synchronizer.output import write_csv
+
+
+def _panns_available() -> bool:
+    try:
+        import panns_inference  # noqa: F401
+        import torch  # noqa: F401
+    except ImportError:
+        return False
+    return True
 
 
 def _click_track(sr: int = 22050, n_clicks: int = 8, spacing_s: float = 1.5) -> np.ndarray:
@@ -24,7 +33,10 @@ def _click_track(sr: int = 22050, n_clicks: int = 8, spacing_s: float = 1.5) -> 
     return y
 
 
+@pytest.mark.skipif(not _panns_available(), reason="panns-inference not installed")
 def test_pipeline(tmp_path: Path) -> None:
+    from synchronizer.embeddings import compute_panns_embeddings
+
     sr = 22050
     y = _click_track(sr=sr)
     onsets = detect_onsets(y, sr)
@@ -33,14 +45,17 @@ def test_pipeline(tmp_path: Path) -> None:
     feats = extract_features(y, sr, onsets)
     assert len(feats) == len(onsets)
 
-    out, chosen_k, silhouette = classify(feats)
+    embeddings = compute_panns_embeddings(y, sr, onsets)
+    assert embeddings.shape == (len(feats), 2048)
+
+    out, chosen_k, silhouette = classify(feats, embeddings)
     csv_path = tmp_path / "out.csv"
     write_csv(out, csv_path)
 
     text = csv_path.read_text()
     assert text.startswith("index,start_time,duration,")
     header = text.splitlines()[0]
-    assert "timbre_cluster" in header
+    assert "timbre_cluster" not in header
     assert "transient_cluster" in header
     assert header.endswith("transient_cluster_k8")
     assert chosen_k >= 1

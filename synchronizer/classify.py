@@ -4,17 +4,25 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from sklearn.cluster import KMeans
+from sklearn.cluster import AgglomerativeClustering
 from sklearn.metrics import silhouette_score
+from umap import UMAP
 
 from .features import TransientFeatures
 
 
 PITCH_CONFIDENCE_FLOOR = 0.5
-DEFAULT_N_TIMBRE_CLUSTERS = 6
 DEFAULT_CLUSTER_K_MAX = 16
 MULTI_K_MIN = 2
-MULTI_K_MAX_FIXED = 8   # always computed regardless of silhouette sweep
+MULTI_K_MAX_FIXED = 8   # always computed regardless of best-k selection
+
+# UMAP hyperparameters (see Clustering_strategy.md)
+UMAP_N_COMPONENTS = 10
+UMAP_MIN_DIST = 0.0
+UMAP_N_NEIGHBORS = 30
+
+# HDBSCAN min cluster size as a fraction of total transients (floor at 3)
+HDBSCAN_MIN_CLUSTER_SIZE_FRAC = 0.05
 
 
 @dataclass
@@ -24,9 +32,8 @@ class ClassifiedTransient:
     brightness_bucket: str     # dark / mid / bright
     energy_bucket: str         # soft / medium / loud
     duration_bucket: str       # short / medium / long
-    timbre_cluster: int        # k-means cluster id, ordered by ascending mean centroid_hz
-    transient_cluster: int     # holistic cluster, k chosen by silhouette score
-    transient_cluster_k2: int  # holistic cluster fixed at k=2
+    transient_cluster: int     # holistic cluster: UMAP→HDBSCAN→agglomerative cap at k_max
+    transient_cluster_k2: int  # HDBSCAN clusters agglomeratively merged to k=2
     transient_cluster_k3: int
     transient_cluster_k4: int
     transient_cluster_k5: int
@@ -57,48 +64,6 @@ def _tercile_bucket(
     return labels[1]
 
 
-def _timbre_clusters(transients: list[TransientFeatures], n_clusters: int) -> np.ndarray:
-    """K-means on standardized MFCC vectors. Cluster IDs are remapped so that
-    cluster 0 has the lowest mean spectral centroid (darkest timbre group) and
-    cluster ``n_clusters-1`` has the highest. K-means itself returns arbitrary
-    cluster numbers; the remap gives stable, semantically ordered IDs across
-    runs."""
-    if len(transients) < n_clusters:
-        return np.zeros(len(transients), dtype=int)
-
-    mfcc = np.stack([t.mfcc for t in transients])
-    mfcc_norm = (mfcc - mfcc.mean(axis=0)) / (mfcc.std(axis=0) + 1e-9)
-
-    km = KMeans(n_clusters=n_clusters, n_init=10, random_state=0)
-    raw = km.fit_predict(mfcc_norm)
-
-    centroids = np.array([t.centroid_hz for t in transients])
-    return _remap_by_centroid(raw, n_clusters, centroids)
-
-
-def _build_feature_matrix(transients: list[TransientFeatures]) -> np.ndarray:
-    """Standardized feature matrix for holistic clustering.
-
-    Uses log-scaled energy and duration (wide dynamic range), plus spectral
-    descriptors and MFCCs. Pitch is excluded — too sparse (NaN for unpitched
-    transients) to be useful as a clustering dimension.
-    """
-    rows = []
-    for t in transients:
-        scalar = [
-            np.log1p(t.energy),
-            t.centroid_hz,
-            t.rolloff_hz,
-            t.bandwidth_hz,
-            t.zcr,
-            np.log1p(t.duration),
-        ]
-        rows.append(np.concatenate([scalar, t.mfcc]))
-    X = np.array(rows, dtype=float)
-    X = (X - X.mean(axis=0)) / (X.std(axis=0) + 1e-9)
-    return X
-
-
 def _remap_by_centroid(
     labels: np.ndarray, k: int, centroids: np.ndarray
 ) -> np.ndarray:
@@ -113,56 +78,106 @@ def _remap_by_centroid(
 
 
 def _holistic_clusters(
-    transients: list[TransientFeatures],
+    embeddings: np.ndarray,
+    centroids: np.ndarray,
     k_max: int,
 ) -> tuple[np.ndarray, int, float, dict[int, np.ndarray]]:
-    """Sweep k=2..max(k_max, MULTI_K_MAX_FIXED), pick the best by silhouette.
+    """UMAP compression → HDBSCAN density clustering → agglomerative cap at k_max.
 
-    Also caches remapped labels for every k in MULTI_K_MIN..MULTI_K_MAX_FIXED.
-    Returns (best_labels, chosen_k, best_silhouette, multi_k_labels) where
-    multi_k_labels maps k -> remapped labels array.
+    Multi-k panels (k=2..8) are produced by agglomerative merging of the HDBSCAN
+    cluster centroids down to each target k. For panels where k ≥ n_raw the full
+    HDBSCAN result is used as-is.
+
+    Returns (best_labels, chosen_k, silhouette, multi_k_labels).
     """
-    n = len(transients)
+    from sklearn.cluster import HDBSCAN
+
+    n = embeddings.shape[0]
     multi_k: dict[int, np.ndarray] = {
         k: np.zeros(n, dtype=int) for k in range(MULTI_K_MIN, MULTI_K_MAX_FIXED + 1)
     }
     if n < 4:
         return np.zeros(n, dtype=int), 1, 0.0, multi_k
 
-    X = _build_feature_matrix(transients)
-    centroids = np.array([t.centroid_hz for t in transients])
-    # Always compute at least MULTI_K_MAX_FIXED so every panel has data.
-    effective_k_hi = min(max(k_max, MULTI_K_MAX_FIXED), n - 1)
+    # Step 1: compress 2048-d PANNs embeddings to a dense low-d manifold.
+    # Clamp hyperparams so they stay valid on small datasets.
+    n_neighbors = min(UMAP_N_NEIGHBORS, n - 1)
+    n_components = min(UMAP_N_COMPONENTS, n - 1)
+    X = UMAP(
+        n_components=n_components,
+        min_dist=UMAP_MIN_DIST,
+        n_neighbors=n_neighbors,
+        random_state=0,
+    ).fit_transform(embeddings)
 
-    best_labels: np.ndarray = np.zeros(n, dtype=int)
-    best_k = MULTI_K_MIN
-    best_score = -1.0
+    # Step 2: density-based clustering on the compressed manifold.
+    # min_cluster_size scales with the dataset; floor at 3 so small tracks
+    # still get meaningful clusters.
+    min_cluster_size = max(3, int(n * HDBSCAN_MIN_CLUSTER_SIZE_FRAC))
+    raw_labels: np.ndarray = HDBSCAN(min_cluster_size=min_cluster_size, copy=True).fit_predict(X)
 
-    for k in range(MULTI_K_MIN, effective_k_hi + 1):
-        km = KMeans(n_clusters=k, n_init=10, random_state=0)
-        raw = km.fit_predict(X)
-        remapped = _remap_by_centroid(raw, k, centroids)
+    n_raw = int(raw_labels.max()) + 1  # clusters are 0..n_raw-1; -1 = noise
 
-        if MULTI_K_MIN <= k <= MULTI_K_MAX_FIXED:
-            multi_k[k] = remapped
+    # Degenerate: HDBSCAN found no clusters (all noise). Return a single cluster.
+    if n_raw < 1:
+        return np.zeros(n, dtype=int), 1, 0.0, multi_k
 
-        if k <= k_max:
-            score = float(
-                silhouette_score(X, raw, sample_size=min(n, 2000), random_state=0)
-            )
-            if score > best_score:
-                best_score, best_k, best_labels = score, k, remapped.copy()
+    # Assign noise points to the nearest HDBSCAN cluster centroid (UMAP space).
+    cluster_centers = np.array([
+        X[raw_labels == c].mean(axis=0) for c in range(n_raw)
+    ])
+    labels = raw_labels.copy()
+    noise_mask = raw_labels == -1
+    if noise_mask.any():
+        dists = np.linalg.norm(
+            X[noise_mask, np.newaxis, :] - cluster_centers[np.newaxis, :, :], axis=2
+        )
+        labels[noise_mask] = dists.argmin(axis=1)
 
-    return best_labels, best_k, best_score, multi_k
+    # Step 3: post-hoc agglomerative merge to respect k_max.
+    # [HDBSCAN → n_raw clusters] → [Agglomerative on centroids → k_max] → [map back]
+    if n_raw > k_max:
+        agg_map = AgglomerativeClustering(n_clusters=k_max).fit_predict(cluster_centers)
+        labels = np.array([agg_map[int(l)] for l in labels], dtype=int)
+        final_k = k_max
+    else:
+        final_k = n_raw
+
+    best_labels = _remap_by_centroid(labels, final_k, centroids)
+
+    score = 0.0
+    if final_k >= 2:
+        score = float(
+            silhouette_score(X, best_labels, sample_size=min(n, 2000), random_state=0)
+        )
+
+    # Multi-k panels: agglomerative merge from the HDBSCAN cluster centroids.
+    # For k < n_raw: merge to k. For k >= n_raw: HDBSCAN already has ≤ k
+    # clusters, so use the full result as-is (can't split without a new algorithm).
+    for k in range(MULTI_K_MIN, MULTI_K_MAX_FIXED + 1):
+        if k < n_raw:
+            agg_labels = AgglomerativeClustering(n_clusters=k).fit_predict(cluster_centers)
+            k_labels = np.array([agg_labels[int(l)] for l in labels], dtype=int)
+            multi_k[k] = _remap_by_centroid(k_labels, k, centroids)
+        else:
+            multi_k[k] = _remap_by_centroid(labels.copy(), n_raw, centroids)
+
+    return best_labels, final_k, score, multi_k
 
 
 def classify(
     transients: list[TransientFeatures],
-    n_timbre_clusters: int = DEFAULT_N_TIMBRE_CLUSTERS,
+    embeddings: np.ndarray,
     cluster_k_max: int = DEFAULT_CLUSTER_K_MAX,
 ) -> tuple[list[ClassifiedTransient], int, float]:
     if not transients:
         return [], 0, 0.0
+
+    if embeddings.shape[0] != len(transients):
+        raise ValueError(
+            f"embeddings rows ({embeddings.shape[0]}) must match "
+            f"number of transients ({len(transients)})"
+        )
 
     energies = np.array([t.energy for t in transients])
     centroids = np.array([t.centroid_hz for t in transients])
@@ -172,15 +187,14 @@ def classify(
         if not np.isnan(t.pitch_hz) and t.pitch_confidence >= PITCH_CONFIDENCE_FLOOR
     ])
 
-    clusters = _timbre_clusters(transients, n_timbre_clusters)
-    holistic, chosen_k, silhouette, multi_k = _holistic_clusters(transients, cluster_k_max)
+    holistic, chosen_k, silhouette, multi_k = _holistic_clusters(
+        embeddings, centroids, cluster_k_max
+    )
 
-    # Tercile thresholds are the same for every transient in the track; compute
-    # them once instead of recomputing inside _tercile_bucket per call.
-    pitch_thresh      = _tercile_thresholds(pitches)
-    centroid_thresh   = _tercile_thresholds(centroids)
-    energy_thresh     = _tercile_thresholds(energies)
-    duration_thresh   = _tercile_thresholds(durations)
+    pitch_thresh    = _tercile_thresholds(pitches)
+    centroid_thresh = _tercile_thresholds(centroids)
+    energy_thresh   = _tercile_thresholds(energies)
+    duration_thresh = _tercile_thresholds(durations)
 
     out = []
     for i, t in enumerate(transients):
@@ -196,7 +210,6 @@ def classify(
                 brightness_bucket=_tercile_bucket(t.centroid_hz, centroid_thresh, ("dark", "mid", "bright")),
                 energy_bucket=_tercile_bucket(t.energy, energy_thresh, ("soft", "medium", "loud")),
                 duration_bucket=_tercile_bucket(t.duration, duration_thresh, ("short", "medium", "long")),
-                timbre_cluster=int(clusters[i]),
                 transient_cluster=int(holistic[i]),
                 transient_cluster_k2=int(multi_k[2][i]),
                 transient_cluster_k3=int(multi_k[3][i]),

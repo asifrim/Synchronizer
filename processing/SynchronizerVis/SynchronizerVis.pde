@@ -69,7 +69,7 @@ import java.io.File;
 
 // --- Track / file config (change only TRACK to switch tracks) ----------------
 
-final String TRACK = "10_Shake_the_Disease";
+final String TRACK = "06_Dropp";
 
 final String AUDIO_FILE    = TRACK + "/track.wav";
 final String CSV_FILE      = TRACK + "/events.csv";
@@ -91,7 +91,7 @@ final String STEM_OTHER_FILE  = TRACK + "/other.wav";
 
 // --- Analysis / display config -----------------------------------------------
 
-final int   N_TIMBRE_CLUSTERS    = 6;
+final int   N_TIMBRE_CLUSTERS    = 7;
 final int   N_TRANSIENT_CLUSTERS = 8;  // always 8 panels; activeK controls how many are live
 final int   MULTI_K_MIN          = 2;
 final int   MULTI_K_MAX_FIXED    = 8;
