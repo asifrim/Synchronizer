@@ -118,6 +118,10 @@ final int     BASE_CC          = 20;     // cluster i -> CC (BASE_CC + i)
 // even very short transients produce a CC gesture the frame loop can resolve.
 final float   MIN_ENV_S        = 0.08;
 final boolean RELEASE_ON_PAUSE = false;  // true = send 0s on pause instead of holding
+// Metronome clock notes: 4th/8th/16th ticks fire note (BASE_CLOCK_NOTE + di)
+// on MIDI_CHANNEL for CLOCK_GATE_S seconds — quarter=36, 8th=37, 16th=38.
+final int     BASE_CLOCK_NOTE  = 36;
+final float   CLOCK_GATE_S     = 0.020;  // 20 ms gate per tick
 
 // --- Stem playback -----------------------------------------------------------
 
@@ -196,6 +200,7 @@ float[][] envCurveCache;         // [N_TRANSIENT_CLUSTERS][N_ENV_SAMPLES+1]
 
 MidiOut midiOut;
 boolean midiEnabled = true;
+boolean[] clockNoteOn;  // per-division gate state; true while note-on has been sent
 
 int   knobDragCluster    = -1;   // -1 = not dragging
 int   knobDragParam      = -1;   // 0=A  1=D

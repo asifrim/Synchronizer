@@ -61,6 +61,25 @@ public class MidiOut {
     }
   }
 
+  public void sendNoteOn(int channel, int note, int velocity) {
+    if (rx == null) return;
+    if (velocity < 0) velocity = 0; else if (velocity > 127) velocity = 127;
+    try {
+      ShortMessage msg = new ShortMessage();
+      msg.setMessage(ShortMessage.NOTE_ON, channel, note, velocity);
+      rx.send(msg, -1);
+    } catch (InvalidMidiDataException ex) {}
+  }
+
+  public void sendNoteOff(int channel, int note) {
+    if (rx == null) return;
+    try {
+      ShortMessage msg = new ShortMessage();
+      msg.setMessage(ShortMessage.NOTE_OFF, channel, note, 0);
+      rx.send(msg, -1);
+    } catch (InvalidMidiDataException ex) {}
+  }
+
   public void close() {
     try { if (rx != null) rx.close(); } catch (Exception ex) {}
     try { if (dev != null && dev.isOpen()) dev.close(); } catch (Exception ex) {}
