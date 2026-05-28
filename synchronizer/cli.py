@@ -37,6 +37,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--band-wait-ms", type=float, nargs=3, metavar=("LOWS", "MIDS", "HIGHS"),
                    default=(200.0, 100.0, 50.0),
                    help="Per-band min spacing in ms (lows mids highs, default 200 100 50).")
+    p.add_argument("--band-pre-post-max-ms", type=float, nargs=3, metavar=("LOWS", "MIDS", "HIGHS"),
+                   default=(232.0, 116.0, 46.0),
+                   help="Per-band local-max window in ms: onset must be the peak within ±ms "
+                        "(lows mids highs, default 232 116 46). Reduce highs to catch denser "
+                        "hi-hat patterns.")
+    p.add_argument("--band-pre-post-avg-ms", type=float, nargs=3, metavar=("LOWS", "MIDS", "HIGHS"),
+                   default=(1160.0, 580.0, 232.0),
+                   help="Per-band adaptive-threshold averaging window in ms "
+                        "(lows mids highs, default 1160 580 232).")
     p.add_argument("--percussive", action="store_true",
                    help="Run HPSS and detect on percussive component only.")
     p.add_argument("--no-drums", action="store_true",
@@ -98,6 +107,8 @@ def main(argv: list[str] | None = None) -> int:
         multi_band=not args.no_multi_band,
         merge_tolerance_ms=args.merge_tolerance_ms,
         band_wait_ms=tuple(args.band_wait_ms),
+        band_pre_post_max_ms=tuple(args.band_pre_post_max_ms),
+        band_pre_post_avg_ms=tuple(args.band_pre_post_avg_ms),
         use_percussive=args.percussive,
     )
 
