@@ -197,6 +197,15 @@ void drawAdsrPanel(float now) {
   text("k =", pL + 8, 8);
   drawKSelector();
 
+  // ENV GATE toggle — amplitude-modulate the audio by the live envelope.
+  float gx = pL + pW - 190; float gy = 8; float gW = 66; float gH = 16;
+  noStroke();
+  fill(envGateEnabled ? color(80, 60, 20) : 30);
+  rect(gx, gy - gH * 0.5, gW, gH, 3);
+  textAlign(CENTER, CENTER); textSize(10);
+  fill(envGateEnabled ? color(240, 180, 60) : color(75));
+  text("ENV GATE", gx + gW * 0.5, gy);
+
   // LEGATO toggle.
   float lx = pL + pW - 118; float ly = 8; float lW = 52; float lH = 16;
   noStroke();
@@ -476,6 +485,14 @@ void drawPanelMeter(int c) {
 
 void panelMousePressed() {
   float mx = mouseX, my = mouseY;
+
+  // ENV GATE toggle.
+  float gx = panelLeft() + panelW() - 190; float gy = 8; float gW = 66; float gH = 16;
+  if (abs(my - gy) <= gH * 0.5 + 2 && mx >= gx && mx <= gx + gW) {
+    envGateEnabled = !envGateEnabled;
+    if (!envGateEnabled) sound.amp(1.0);
+    return;
+  }
 
   // LEGATO toggle.
   float lx = panelLeft() + panelW() - 118; float ly = 8; float lW = 52; float lH = 16;

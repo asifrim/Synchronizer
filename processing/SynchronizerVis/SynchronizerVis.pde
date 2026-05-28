@@ -49,6 +49,9 @@
 //   right panel: click "RMS scale"    toggle quantile RMS scaling for MIDI
 //   right panel: click "LEGATO"       extend each transient's decay to the next
 //                                     active transient's start time
+//   right panel: click "ENV GATE"     modulate sound.amp() by the live envelope max;
+//                                     use this to hear which transients match the
+//                                     audio and whether they are well aligned
 //
 // MIDI output (drives TouchDesigner): as the playhead crosses each transient,
 // an AD envelope is emitted as a 7-bit MIDI CC. Each transient_cluster has
@@ -181,6 +184,7 @@ int   dragRow         = -1;
 int   dragStartBucket = -1;
 float dragStartY      = 0;
 boolean legatoEnabled    = false;
+boolean envGateEnabled   = false;  // modulate sound.amp() by the live envelope max
 float[] legatoDurs;              // per-event legato durations (indexed by rowIndex)
 
 int   timeDragEventIdx   = -1;  // left-drag state (time-shift or cluster-change)

@@ -57,6 +57,28 @@ void updateClockMidi(float now) {
   }
 }
 
+// Modulate sound amplitude by the live transient envelope when ENV GATE is on.
+// Uses raw envValue (no energy scaling) so every transient opens the gate fully,
+// making misaligned or missed transients immediately audible as dropouts.
+void updateEnvGate(float now) {
+  if (!envGateEnabled) return;
+  int clusterRow = csvCols.length - 1;
+  float gate = 0;
+  for (Event e : events) {
+    if (e.disabled) continue;
+    int c = e.bucketIdx[clusterRow];
+    if (c < 0 || c >= activeK || !clusterEnabled[c]) continue;
+    float triggerT = e.origT + clusterOffsetMs[c] / 1000.0;
+    float envLen   = eventEnvLen(e);
+    float p        = (now - triggerT) / envLen;
+    if (p >= 0 && p < 1) {
+      float v = envValue(c, p);
+      if (v > gate) gate = v;
+    }
+  }
+  sound.amp(gate);
+}
+
 void closeMidi() {
   if (midiOut != null) { midiOut.close(); midiOut = null; }
 }

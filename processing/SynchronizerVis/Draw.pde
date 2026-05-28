@@ -30,6 +30,7 @@ void draw() {
   float now = sound.position();
   updateMidi(now);
   updateClockMidi(now);
+  updateEnvGate(now);
 
   int   currentPage = (int)(now / PAGE_DURATION_S);
   float pageStart   = currentPage * PAGE_DURATION_S;
