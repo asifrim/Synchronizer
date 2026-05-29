@@ -19,9 +19,8 @@ out/
 samples/
 stems/
 
-# Processing sketch data: ignore only the versioned edit saves (_v<N>.csv).
-# The canonical per-track files (events.csv, waveform.csv, etc.) are tracked.
-processing/SynchronizerVis/data/**/*_v*.csv
+# Processing sketch data: generated outputs, not source.
+processing/SynchronizerVis/data/
 
 # Processing autosave files
 *.autosave
