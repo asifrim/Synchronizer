@@ -1,10 +1,15 @@
-// AdsrPanel.pde — AD envelope model, right-panel drawing, and knob interaction.
+// AdsrPanel.pde — Envelope model, right-panel drawing, and knob interaction.
 //
-// Each cluster has an Attack-Decay envelope (no Sustain or Release).
+// Each cluster has a switchable envelope mode (click AD / AHD / SPR in header):
+//   AD (0)     — attack ramp + decay ramp (original behaviour)
+//   AHD (1)    — snap attack → hold plateau → fast release (breakdancer pop)
+//   SPRING (2) — damped-oscillation body; OVR = smooth mechanical arrive, UND = ring/bounce
+//
 // Controls per cluster:
 //   LEFT:   envelope curve preview (full cluster height)
-//   RIGHT:  row 1 — A and D rotary knobs
-//           row 2 — LIN/EXP shape toggles for A and D
+//   HEADER: AD / AHD / SPR mode chips (right of label, left of ON/OFF)
+//   RIGHT:  row 1 — A and D/H/S rotary knobs (label changes per mode)
+//           row 2 — LIN/EXP (AD/AHD) or OVR/UND (SPRING) shape toggles
 //   BOTTOM: CC level meter (full width)
 
 // --- Envelope model ----------------------------------------------------------
@@ -15,6 +20,7 @@ void initAdsr() {
   decayFrac       = new float[n];
   attackExp       = new boolean[n];
   decayExp        = new boolean[n];
+  envMode         = new int[n];    // 0=AD, 1=AHD, 2=SPRING — allocate before clampAdsr
   clusterOffsetMs = new float[n];
   clusterEnabled  = new boolean[n];
   ccVal           = new float[n];
@@ -76,9 +82,15 @@ void rebuildEnvCache(int c) {
 
 void clampAdsr(int c) {
   attackFrac[c] = constrain(attackFrac[c], 0.01, 0.99);
-  decayFrac[c]  = constrain(decayFrac[c],  0.01, 1.0 - attackFrac[c]);
+  // SPRING: D is a damping coefficient, not a time fraction — no sum constraint.
+  if (envMode != null && envMode[c] == 2) {
+    decayFrac[c] = constrain(decayFrac[c], 0.01, 1.0);
+  } else {
+    decayFrac[c] = constrain(decayFrac[c], 0.01, 1.0 - attackFrac[c]);
+  }
 }
 
+// loadAdsr reads "env_mode" if present, so hasMode check happens there.
 String adsrFileName() {
   return TRACK + "/adsr.csv";
 }
@@ -87,13 +99,14 @@ void loadAdsr() {
   File f = new File(dataPath(adsrFileName()));
   if (!f.exists()) return;
   Table t = loadTable(adsrFileName(), "header");
-  boolean hasDecay = false, hasExp = false, hasOffset = false, hasEnabled = false;
+  boolean hasDecay = false, hasExp = false, hasOffset = false, hasEnabled = false, hasMode = false;
   for (int i = 0; i < t.getColumnCount(); i++) {
     String col = t.getColumnTitle(i);
     if (col.equals("decay"))      hasDecay   = true;
     if (col.equals("attack_exp")) hasExp     = true;
     if (col.equals("offset_ms"))  hasOffset  = true;
     if (col.equals("enabled"))    hasEnabled = true;
+    if (col.equals("env_mode"))   hasMode    = true;
   }
   for (TableRow r : t.rows()) {
     int c = r.getInt("cluster");
@@ -106,6 +119,7 @@ void loadAdsr() {
     }
     if (hasOffset)  clusterOffsetMs[c] = constrain(r.getFloat("offset_ms"), -100, 100);
     if (hasEnabled) clusterEnabled[c]  = r.getInt("enabled") != 0;
+    if (hasMode)    envMode[c]         = constrain(r.getInt("env_mode"), 0, 2);
     clampAdsr(c);
   }
 }
@@ -119,6 +133,7 @@ void saveAdsr() {
   out.addColumn("decay_exp");
   out.addColumn("offset_ms");
   out.addColumn("enabled");
+  out.addColumn("env_mode");
   for (int c = 0; c < N_TRANSIENT_CLUSTERS; c++) {
     TableRow row = out.addRow();
     row.setInt("cluster",     c);
@@ -128,6 +143,7 @@ void saveAdsr() {
     row.setInt("decay_exp",   decayExp[c]  ? 1 : 0);
     row.setFloat("offset_ms", clusterOffsetMs[c]);
     row.setInt("enabled",     clusterEnabled[c] ? 1 : 0);
+    row.setInt("env_mode",    envMode[c]);
   }
   saveTable(out, dataPath(adsrFileName()));
   savedNotice      = "saved " + adsrFileName();
@@ -135,22 +151,56 @@ void saveAdsr() {
   println(savedNotice);
 }
 
-// AD envelope value at normalised phase p ∈ [0, 1).
+// Envelope value at normalised phase p ∈ [0, 1). Three switchable modes:
 //
-// Attack ramp  linear → 0→1 straight
-//              exp    → t²  (slow start, snappy peak)
-// Decay ramp   linear → 1→0 straight
-//              exp    → (1-t)²  (fast initial drop, slow tail)
-// Silence for any remaining fraction after A+D.
+// AD (mode 0) — attack ramp + decay ramp; silence after A+D.
+//   A: linear (t) or exp (t²). D: linear (1-t) or exp (1-t)².
+//
+// AHD (mode 1) — snap attack → hold at peak → fast release.
+//   A knob = attack, D knob = hold fraction, remainder = release.
+//   Models a breakdancer freeze: instant snap, plateau, then drop.
+//
+// SPRING (mode 2) — damped-oscillation body after the attack.
+//   A knob = attack, D knob = damping (high = tight servo, low = ringy).
+//   OVR (decayExp=false): pure exponential settle — mechanical hard arrival.
+//   UND (decayExp=true):  damped cosine, positive lobes only — bounce/ring.
 float envValue(int c, float p) {
   if (p < 0 || p >= 1) return 0;
-  float aF = attackFrac[c];
-  float dF = decayFrac[c];
+  float aF   = attackFrac[c];
+  float dF   = decayFrac[c];
+  int   mode = envMode[c];
+
+  // Attack phase — identical across all modes.
   if (p < aF) {
     float t = aF > 0 ? p / aF : 1.0;
     return attackExp[c] ? t * t : t;
-  } else if (p < aF + dF) {
-    float t = dF > 0 ? (p - aF) / dF : 1.0;
+  }
+
+  if (mode == 1) {
+    // AHD: hold at peak, then release over the remaining fraction.
+    float hF = dF;
+    float rF = max(0.02, 1.0 - aF - hF);
+    if (p < aF + hF) return 1.0;
+    float t   = (p - aF - hF) / rF;
+    float inv = 1.0 - t;
+    return decayExp[c] ? inv * inv : inv;
+  }
+
+  if (mode == 2) {
+    // SPRING: damped-oscillation body.
+    float t       = (1.0 - aF) > 0 ? (p - aF) / (1.0 - aF) : 1.0;
+    float damping = dF * 5.5 + 0.4;
+    if (decayExp[c]) {
+      // Underdamped: positive lobes of a damped cosine (bouncing-ball feel).
+      return constrain(exp(-damping * t) * cos(TWO_PI * 1.25 * t), 0, 1);
+    }
+    // Overdamped: clean exponential settle (mechanical hard arrival).
+    return exp(-damping * t);
+  }
+
+  // Mode 0 — AD (default).
+  if (p < aF + dF) {
+    float t   = dF > 0 ? (p - aF) / dF : 1.0;
     float inv = 1.0 - t;
     return decayExp[c] ? inv * inv : inv;
   }
@@ -252,11 +302,14 @@ void drawPanelCluster(int c, float now) {
   text("cluster " + c + "  CC " + (BASE_CC + c), pL + 10, cy + 10);
 
   drawPanelEnvCurve(c, now);
+  drawModeButtons(c);
   drawKnob(c, 0, "A", attackFrac[c]);
-  drawKnob(c, 1, "D", decayFrac[c]);
+  String dLabel = envMode[c] == 1 ? "H" : envMode[c] == 2 ? "S" : "D";
+  drawKnob(c, 1, dLabel, decayFrac[c]);
   drawOffsetKnob(c);
   drawShapeToggle(c, 0, attackExp[c]);
-  drawShapeToggle(c, 1, decayExp[c]);
+  if (envMode[c] == 2) drawShapeToggle(c, 1, decayExp[c], "OVR", "UND");
+  else                 drawShapeToggle(c, 1, decayExp[c]);
   drawPanelMeter(c);
 
   // Grey-out overlay for clusters outside the active k range.
@@ -310,10 +363,11 @@ void drawPanelEnvCurve(int c, float now) {
   }
   endShape();
 
-  // Phase labels.
+  // Phase labels — second label reflects the active mode's meaning.
+  String bodyLabel = envMode[c] == 1 ? "H" : envMode[c] == 2 ? "S" : "D";
   fill(65); textSize(9); textAlign(CENTER, BOTTOM); noStroke();
   text("A", (cL + xA) * 0.5, cT);
-  text("D", (xA + cR) * 0.5, cT);
+  text(bodyLabel, (xA + cR) * 0.5, cT);
 
   // Live playhead dot — uses the same shifted trigger time as MIDI.
   int clusterRow = csvCols.length - 1;
@@ -448,8 +502,33 @@ void drawOffsetKnob(int c) {
   text("T " + lbl, cx, cy + r + 3);
 }
 
-// Draw a single LIN/EXP shape toggle below the knob. Click to cycle.
+// Three-state mode selector drawn in the cluster header strip.
+// Positions three small chips (AD / AHD / SPR) right-justified before the ON/OFF button.
+void drawModeButtons(int c) {
+  float cy  = panelClusterY(c);
+  float pL  = panelLeft();
+  float bW  = 22, bH = 11;
+  float x0  = pL + 302 - 3 * bW - 2 * 3;  // right-aligned before the ON/OFF button
+  String[] labels = {"AD", "AHD", "SPR"};
+  color col = palettes[0][c];
+  for (int m = 0; m < 3; m++) {
+    float bx  = x0 + m * (bW + 3);
+    boolean act = (envMode[c] == m);
+    noStroke();
+    fill(act ? color(red(col)*0.40, green(col)*0.40, blue(col)*0.40) : 22);
+    rect(bx, cy + 4, bW, bH, 2);
+    textAlign(CENTER, CENTER); textSize(8);
+    fill(act ? col : color(55));
+    text(labels[m], bx + bW * 0.5, cy + 4 + bH * 0.5);
+  }
+}
+
+// Draw a single shape toggle below a knob. Click to cycle between two states.
 void drawShapeToggle(int c, int param, boolean isExp) {
+  drawShapeToggle(c, param, isExp, "LIN", "EXP");
+}
+
+void drawShapeToggle(int c, int param, boolean isExp, String lblFalse, String lblTrue) {
   float cx  = panelKnobCX(param);
   float cy  = panelToggleCY(c);
   color col = palettes[0][c];
@@ -460,7 +539,7 @@ void drawShapeToggle(int c, int param, boolean isExp) {
   rect(cx - bW * 0.5, cy - bH * 0.5, bW, bH, 3);
   textAlign(CENTER, CENTER); textSize(9);
   fill(isExp ? col : color(80));
-  text(isExp ? "EXP" : "LIN", cx, cy);
+  text(isExp ? lblTrue : lblFalse, cx, cy);
 }
 
 void drawPanelMeter(int c) {
@@ -527,6 +606,24 @@ void panelMousePressed() {
   for (int c = 0; c < N_TRANSIENT_CLUSTERS; c++) {
     float kcy = panelKnobCY(c);
     float tcy = panelToggleCY(c);
+
+    // Mode buttons (AD / AHD / SPR) in header strip — left of the ON/OFF button.
+    float mbW = 22, mbH = 11;
+    float mx0 = panelLeft() + 302 - 3 * mbW - 2 * 3;
+    float headerT = panelClusterY(c) + 4;
+    if (my >= headerT && my <= headerT + mbH) {
+      for (int m = 0; m < 3; m++) {
+        float mbx = mx0 + m * (mbW + 3);
+        if (mx >= mbx && mx < mbx + mbW) {
+          envMode[c] = m;
+          clampAdsr(c);
+          rebuildEnvCache(c);
+          for (int i = 0; i < N_TRANSIENT_CLUSTERS; i++) lastSent[i] = -1;
+          saveAdsr();
+          return;
+        }
+      }
+    }
 
     // ON/OFF enable button — top-right of the header strip.
     float ebx = panelLeft() + panelW() - 36;

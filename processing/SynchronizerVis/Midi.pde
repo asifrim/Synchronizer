@@ -93,6 +93,14 @@ void dispose() {
   super.dispose();
 }
 
+// Fire the note-off for the pause trigger pulse after its gate expires.
+void updatePausePulse() {
+  if (pausePulseOffAt >= 0 && millis() >= pausePulseOffAt) {
+    if (midiOut != null) midiOut.sendNoteOff(15, 24);
+    pausePulseOffAt = -1;
+  }
+}
+
 // Stateless per-frame envelope → CC send. Deriving purely from `now` means
 // pause (frozen time → values hold), seek, and rate changes are all handled
 // automatically without extra state. Polyphony across same-cluster events is

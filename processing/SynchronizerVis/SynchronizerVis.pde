@@ -43,8 +43,13 @@
 //   shift+left-click on an event      preview: plays from onset for its duration, then stops
 //   right-click + drag on cell        drag up = higher bucket value
 //                                     (drag down = lower), per-row bucket ladder
-//   right panel: drag A / D knobs     reshape envelope per cluster
-//   right panel: click LIN / EXP      toggle attack or decay curve shape
+//   right panel: click AD/AHD/SPR      switch envelope mode per cluster:
+//                                     AD = attack+decay (default)
+//                                     AHD = snap→hold→release (breakdancer pop)
+//                                     SPRING = damped oscillation (mechanical)
+//   right panel: drag A / D knobs     reshape envelope (D = hold in AHD, damping in SPRING)
+//   right panel: click LIN / EXP      toggle attack or decay shape
+//                                     (SPRING decay toggle shows OVR / UND instead)
 //   right panel: click k-selector     switch the active number of clusters
 //   right panel: click "RMS scale"    toggle quantile RMS scaling for MIDI
 //   right panel: click "LEGATO"       extend each transient's decay to the next
@@ -101,7 +106,6 @@ final String STEM_OTHER_FILE  = TRACK + "/other.wav";
 
 // --- Analysis / display config -----------------------------------------------
 
-final int   N_TIMBRE_CLUSTERS    = 6;
 final int   N_TRANSIENT_CLUSTERS = 8;  // always 8 panels; activeK controls how many are live
 final int   MULTI_K_MIN          = 2;
 final int   MULTI_K_MAX_FIXED    = 8;
@@ -163,12 +167,13 @@ PGraphics waveformBuffer;
 PGraphics gridBgBuffer;        // cached grid waveform background; rebuilt on page change
 int       gridBgPage = -1;
 
-// Bucket label arrays — indices match CSV values. Only TRANSIENT_CLUSTER is
-// used by the grid; TIMBRE survives as a label source for the (legacy) palette
-// builder if a later panel needs it.
-String[]       TIMBRE;
+// Cluster-id → label strings ("0".."7"), indexed by transient_cluster value.
 String[]       TRANSIENT_CLUSTER;
 
+// The grid draws a single row, keyed off the transient_cluster column. These
+// stay one-element arrays so the row-indexed drawing/edit/save code reads the
+// same shape everywhere (rowValues[0] == TRANSIENT_CLUSTER, csvCols[0] is the
+// column it saves back to).
 String[][]     rowValues;
 final String[] rowNames = {""};
 final String[] csvCols  = {"transient_cluster"};
@@ -210,6 +215,7 @@ int    savedNoticeUntil = 0;
 
 float[]   attackFrac, decayFrac;
 boolean[] attackExp, decayExp;   // true = exponential curve shape
+int[]     envMode;                   // per cluster: 0=AD, 1=AHD, 2=SPRING
 float[]   clusterOffsetMs;       // per-cluster trigger-time offset, -100..+100 ms
 boolean[] clusterEnabled;        // per-cluster on/off; false = no MIDI, greyed in grid
 float[]   ccVal;                 // live envelope value per cluster, 0..1
@@ -223,6 +229,7 @@ float[][] envCurveCache;         // [N_TRANSIENT_CLUSTERS][N_ENV_SAMPLES+1]
 MidiOut midiOut;
 boolean midiEnabled = true;
 boolean[] clockNoteOn;  // per-division gate state; true while note-on has been sent
+int pausePulseOffAt = -1;  // millis() target for the pause-trigger note-off; -1 = idle
 
 int   knobDragCluster    = -1;   // -1 = not dragging
 int   knobDragParam      = -1;   // 0=A  1=D
@@ -285,8 +292,6 @@ void setup() {
   size(1920, 1080, P2D);
   frameRate(120);
 
-  TIMBRE = new String[N_TIMBRE_CLUSTERS];
-  for (int i = 0; i < N_TIMBRE_CLUSTERS; i++) TIMBRE[i] = str(i);
   TRANSIENT_CLUSTER = new String[N_TRANSIENT_CLUSTERS];
   for (int i = 0; i < N_TRANSIENT_CLUSTERS; i++) TRANSIENT_CLUSTER[i] = str(i);
   rowValues = new String[][]{TRANSIENT_CLUSTER};

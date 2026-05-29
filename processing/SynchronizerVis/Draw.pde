@@ -31,6 +31,7 @@ void draw() {
   updateMidi(now);
   updateClockMidi(now);
   updateEnvGate(now);
+  updatePausePulse();
 
   int   currentPage = (int)(now / PAGE_DURATION_S);
   float pageStart   = currentPage * PAGE_DURATION_S;

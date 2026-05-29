@@ -201,7 +201,15 @@ void keyPressed() {
   }
   if (key == ' ') {
     stopAtTime = -1;
-    if (sound.isPlaying()) sound.pause(); else sound.play();
+    if (sound.isPlaying()) {
+      sound.pause();
+      for (int c = 0; c < N_TRANSIENT_CLUSTERS; c++) {
+        if (lastSent[c] != 0) { sendCC(BASE_CC + c, 0); lastSent[c] = 0; }
+      }
+      if (midiOut != null) { midiOut.sendNoteOn(15, 24, 127); pausePulseOffAt = millis() + 20; }
+    } else {
+      sound.play();
+    }
     return;
   }
   if (key == 'r' || key == 'R') { seek(0); return; }
