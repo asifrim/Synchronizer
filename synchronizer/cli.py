@@ -9,7 +9,7 @@ import numpy as np
 
 from .classify import DEFAULT_CLUSTER_K_MAX, classify
 from .detect import DetectionConfig, detect_onsets, load_audio
-from .features import extract_features
+from .features import _slice_bounds, extract_features
 from .grid import build_grid, write_grid
 from .output import write_csv
 from .segment import (
@@ -119,9 +119,15 @@ def main(argv: list[str] | None = None) -> int:
     # re-decoding the file twice.
     share_original_audio = (in_path == original_input) and (cfg.sr is None)
     onsets = detect_onsets(y, sr, cfg)
-    feats = extract_features(y, sr, onsets, hop_length=cfg.hop_length, compute_pitch=not args.no_pitch)
+    # One canonical slice list shared by both feature extraction and PANNs
+    # embeddings so the two matrices always have matching row counts.
+    bounds = _slice_bounds(onsets, len(y) / sr)
+    feats = extract_features(
+        y, sr, onsets, hop_length=cfg.hop_length,
+        compute_pitch=not args.no_pitch, bounds=bounds,
+    )
     from .embeddings import compute_panns_embeddings
-    embeddings = compute_panns_embeddings(y, sr, onsets)
+    embeddings = compute_panns_embeddings(y, sr, onsets, bounds=bounds)
 
     # Resolve output path early so we can write the embeddings sidecar before classify.
     out_arg = Path(args.output)

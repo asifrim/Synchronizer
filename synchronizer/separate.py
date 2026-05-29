@@ -31,17 +31,13 @@ def stem_path(audio_path: Path, stem: str, stems_dir: Path) -> Path:
     return stems_dir / MODEL / audio_path.stem / f"{stem}.wav"
 
 
-# Kept as a back-compat alias for code that imported the old name.
-def drum_stem_path(audio_path: Path, stems_dir: Path) -> Path:
-    return stem_path(audio_path, "drums", stems_dir)
-
-
 def _run_demucs(audio_path: Path, stems_dir: Path, two_stems: str | None) -> None:
     try:
         import demucs  # noqa: F401
     except ImportError as e:
         raise RuntimeError(
-            "Demucs is not installed. Install with `pip install -e '.[demucs]'`."
+            "demucs failed to import — it is a core dependency; reinstall the "
+            "package with `pip install -e .`."
         ) from e
     cmd = [sys.executable, "-m", "demucs", "-n", MODEL, "-o", str(stems_dir)]
     if two_stems is not None:

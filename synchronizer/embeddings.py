@@ -27,19 +27,23 @@ BATCH_SIZE = 32           # bounded so CPU runs don't blow up memory
 
 def compute_panns_embeddings(
     y: np.ndarray, sr: int, onsets: np.ndarray,
+    bounds: list[tuple[float, float]] | None = None,
 ) -> np.ndarray:
     """Return a ``(n_transients, 2048)`` embedding matrix from PANNs CNN14.
 
     ``y``/``sr`` is the audio the onsets were detected on (the drum stem in
-    the default CLI flow). Slices use the same bounds as ``features.extract_features``
-    so embeddings line up 1:1 with the feature rows.
+    the default CLI flow). Pass the same ``bounds`` the CLI hands to
+    ``features.extract_features`` so embeddings line up 1:1 with the feature
+    rows; when omitted they're derived here (slice times are sample-rate
+    independent, so they map cleanly onto the 32 kHz resample).
     """
     try:
         import torch  # noqa: F401
         from panns_inference import AudioTagging
     except ImportError as e:
         raise RuntimeError(
-            "PANNs is not installed. Install with `pip install panns-inference torch`."
+            "torch / panns_inference failed to import — they are core dependencies; "
+            "reinstall the package with `pip install -e .`."
         ) from e
 
     if len(onsets) == 0:
@@ -47,8 +51,8 @@ def compute_panns_embeddings(
 
     if sr != PANNS_SR:
         y = librosa.resample(y, orig_sr=sr, target_sr=PANNS_SR)
-    total = len(y) / PANNS_SR
-    bounds = _slice_bounds(onsets, total)
+    if bounds is None:
+        bounds = _slice_bounds(onsets, len(y) / PANNS_SR)
 
     pad_samples = int(SLICE_PAD_SECONDS * PANNS_SR)
     batch = np.zeros((len(bounds), pad_samples), dtype=np.float32)

@@ -72,16 +72,21 @@ def extract_features(
     onsets: np.ndarray,
     hop_length: int = 512,
     compute_pitch: bool = True,
+    bounds: list[tuple[float, float]] | None = None,
 ) -> list[TransientFeatures]:
-    total = len(y) / sr
+    # Use the caller's canonical bounds when supplied so this stage and the
+    # embeddings stage operate on an identical transient set (the CLI computes
+    # them once). Fall back to deriving them for direct callers / tests.
+    if bounds is None:
+        bounds = _slice_bounds(onsets, len(y) / sr)
     out: list[TransientFeatures] = []
 
-    for i, (t0, t1) in enumerate(_slice_bounds(onsets, total)):
+    for i, (t0, t1) in enumerate(bounds):
         s0 = int(t0 * sr)
-        s1 = int(t1 * sr)
+        # Guarantee a non-empty slice so this stage never silently drops a row
+        # the embeddings stage keeps (which would misalign the two matrices).
+        s1 = max(int(t1 * sr), s0 + 1)
         s = y[s0:s1]
-        if s.size == 0:
-            continue
 
         rms = librosa.feature.rms(y=s, hop_length=hop_length).flatten()
         centroid = librosa.feature.spectral_centroid(y=s, sr=sr, hop_length=hop_length).flatten()

@@ -94,21 +94,10 @@ stems/htdemucs/<audio_basename>/other.wav  →  processing/SynchronizerVis/data/
 Skip silently if absent.
 
 ### 6. Update the sketch constants
-Edit `processing/SynchronizerVis/SynchronizerVis.pde`. Only two constants ever need changing:
+Edit `processing/SynchronizerVis/SynchronizerVis.pde`. Only one constant ever needs changing:
 
 ```processing
-final String TRACK            = "<stem>";
-final int    N_TIMBRE_CLUSTERS = <detected>;
-```
-
-Detect `N_TIMBRE_CLUSTERS` from the CSV:
-```
-python -c "
-import csv
-rows = list(csv.DictReader(open('processing/SynchronizerVis/data/<stem>/events.csv')))
-ti = max(int(r['timbre_cluster']) for r in rows if r.get('timbre_cluster','').strip()) + 1
-print(ti)
-"
+final String TRACK = "<stem>";
 ```
 
 `N_TRANSIENT_CLUSTERS` is always 8 — do not change it.
